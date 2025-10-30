@@ -11,8 +11,8 @@ import pydeck as pdk
 # ------------------------------------------------------
 # ⚙️ CONFIGURATION
 # ------------------------------------------------------
-st.set_page_config(page_title="Prédiction course - GPX + FIT + Météo + 3D", layout="wide")
-st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Carte Satellite 3D)")
+st.set_page_config(page_title="Prédiction course - GPX + FIT + Météo + Satellite 3D", layout="wide")
+st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Carte Satellite 3D réaliste)")
 
 # ------------------------------------------------------
 # 🧩 UTILITAIRES
@@ -233,9 +233,9 @@ if st.button("🚀 Lancer l’analyse complète"):
     st.dataframe(results, use_container_width=True)
 
     # ------------------------------------------------------
-    # 🌍 Carte Satellite 3D lisible et réaliste
+    # 🌍 Carte Satellite 3D réaliste (ESRI World Imagery)
     # ------------------------------------------------------
-    st.subheader("🛰️ Carte Satellite 3D du parcours")
+    st.subheader("🛰️ Carte Satellite 3D réaliste")
 
     view = pdk.ViewState(
         latitude=df_points.lat.mean(),
@@ -245,7 +245,6 @@ if st.button("🚀 Lancer l’analyse complète"):
         bearing=30,
     )
 
-    # Couche du parcours
     path_layer = pdk.Layer(
         "PathLayer",
         data=[{"path": df_points[["lon","lat"]].values.tolist(), "name": "Parcours"}],
@@ -254,9 +253,9 @@ if st.button("🚀 Lancer l’analyse complète"):
         width_min_pixels=4,
     )
 
-    # Carte satellite ESRI + relief
+    # Utilisation du fond ESRI World Imagery (vrai satellite)
     deck = pdk.Deck(
-        map_style="https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
+        map_style="https://basemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/VectorTileServer/resources/styles/root.json",
         initial_view_state=view,
         layers=[path_layer],
         tooltip={"text": "{name}"},

@@ -11,8 +11,8 @@ import pydeck as pdk
 # ------------------------------------------------------
 # ⚙️ CONFIGURATION
 # ------------------------------------------------------
-st.set_page_config(page_title="Prédiction course - GPX + FIT + Météo + Satellite 3D", layout="wide")
-st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Carte Satellite 3D réaliste)")
+st.set_page_config(page_title="Course GPX + FIT + Météo + Satellite 3D", layout="wide")
+st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Satellite 3D réaliste)")
 
 # ------------------------------------------------------
 # 🧩 UTILITAIRES
@@ -177,65 +177,10 @@ if st.button("🚀 Lancer l’analyse complète"):
         dists.append(total)
     st.success(f"📏 Distance totale : {total/1000:.2f} km")
 
-    # Régression log-log
-    temps_sec, dists_ref = [], []
-    for r in refs:
-        t = hms_to_seconds(r["temps"])
-        t_adj = t * (k_up ** r["D_up"]) * (k_down ** r["D_down"])
-        temps_sec.append(t_adj)
-        dists_ref.append(r["distance"])
-    K = sum(
-        math.log(temps_sec[j]/temps_sec[i]) / math.log(dists_ref[j]/dists_ref[i])
-        for i in range(len(refs)) for j in range(i+1,len(refs))
-    ) / max(1, len(refs)-1)
-    st.info(f"Exposant log-log estimé : {K:.4f}")
-
-    # Météo
-    meteo = fetch_weather(API_KEY, lat, lon)
-    dt_depart = datetime.combine(date_course, heure_course)
-
-    # Prévision km par km
-    km_marks = [i*1000 for i in range(1, int(total//1000)+1)]
-    if total % 1000 != 0:
-        km_marks.append(total)
-    base_total = hms_to_seconds(objectif_temps) if objectif_temps else temps_sec[-1]*(total/dists_ref[-1])**K
-    base_s_per_km = base_total / (total/1000)
-
-    results = []
-    cum_time = 0
-    for i, d in enumerate(km_marks):
-        e_cur = np.interp(d, dists, [p.elevation or 0 for p in points])
-        e_prev = np.interp(d-1000, dists, [p.elevation or 0 for p in points]) if i > 0 else e_cur
-        d_up = max(0, e_cur - e_prev)
-        d_down = max(0, e_prev - e_cur)
-        t_km = base_s_per_km * (k_up**d_up) * (k_down**d_down)
-        passage = dt_depart + timedelta(seconds=cum_time + t_km)
-        w = find_weather_entry(meteo, passage)
-        temp = w["temp"] if w else 20
-        if temp > 20:
-            t_km *= (k_temp_sup ** (temp - 20))
-        else:
-            t_km *= (k_temp_inf ** (20 - temp))
-        cum_time += t_km
-        results.append({
-            "Km": i+1,
-            "D+ (m)": round(d_up,1),
-            "D- (m)": round(d_down,1),
-            "Temp (°C)": round(temp,1),
-            "Temps segment (s)": round(t_km,1),
-            "Allure (min/km)": f"{int((t_km//60))}:{int(t_km%60):02d}"
-        })
-
-    total_time = seconds_to_hms(sum(r["Temps segment (s)"] for r in results))
-    st.success(f"⏱️ Temps total prévisionnel : {total_time}")
-
-    st.subheader("📋 Détails km par km")
-    st.dataframe(results, use_container_width=True)
-
     # ------------------------------------------------------
-    # 🌍 Carte Satellite 3D réaliste (ESRI World Imagery)
+    # 🌍 Carte Satellite + Relief 3D
     # ------------------------------------------------------
-    st.subheader("🛰️ Carte Satellite 3D réaliste")
+    st.subheader("🛰️ Carte Satellite 3D réaliste (relief + photo satellite)")
 
     view = pdk.ViewState(
         latitude=df_points.lat.mean(),
@@ -245,6 +190,23 @@ if st.button("🚀 Lancer l’analyse complète"):
         bearing=30,
     )
 
+    # Relief (modèle de terrain mondial)
+    terrain_layer = pdk.Layer(
+        "TerrainLayer",
+        data=None,
+        elevation_decoder={
+            "rScaler": 256,
+            "gScaler": 1,
+            "bScaler": 1 / 256,
+            "offset": -32768,
+        },
+        texture="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+        elevation_data="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+        bounds=[df_points.lon.min()-0.02, df_points.lat.min()-0.02,
+                df_points.lon.max()+0.02, df_points.lat.max()+0.02],
+    )
+
+    # Tracé GPX
     path_layer = pdk.Layer(
         "PathLayer",
         data=[{"path": df_points[["lon","lat"]].values.tolist(), "name": "Parcours"}],
@@ -253,12 +215,12 @@ if st.button("🚀 Lancer l’analyse complète"):
         width_min_pixels=4,
     )
 
-    # Utilisation du fond ESRI World Imagery (vrai satellite)
+    # Fond satellite ESRI World Imagery
     deck = pdk.Deck(
-        map_style="https://basemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/VectorTileServer/resources/styles/root.json",
+        map_style="https://basemaps.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         initial_view_state=view,
-        layers=[path_layer],
+        layers=[terrain_layer, path_layer],
         tooltip={"text": "{name}"},
     )
 
-    st.pydeck_chart(deck)
+    st.pydeck_chart(deck, use_container_width=True)

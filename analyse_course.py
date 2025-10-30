@@ -12,7 +12,7 @@ import pydeck as pdk
 # ⚙️ CONFIGURATION
 # ------------------------------------------------------
 st.set_page_config(page_title="Prédiction course - GPX + FIT + Météo + 3D", layout="wide")
-st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Carte 3D Satellite)")
+st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Carte Satellite 3D)")
 
 # ------------------------------------------------------
 # 🧩 UTILITAIRES
@@ -40,8 +40,7 @@ def parse_gpx_points(file):
     return gpx, points
 
 def gpx_to_df(points):
-    rows = [{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0} for p in points]
-    return pd.DataFrame(rows)
+    return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0} for p in points])
 
 def parse_fit(file):
     try:
@@ -234,27 +233,19 @@ if st.button("🚀 Lancer l’analyse complète"):
     st.dataframe(results, use_container_width=True)
 
     # ------------------------------------------------------
-    # 🌍 Carte 3D satellite unique
+    # 🌍 Carte Satellite 3D lisible et réaliste
     # ------------------------------------------------------
-    st.subheader("🛰️ Carte 3D Satellite du parcours")
+    st.subheader("🛰️ Carte Satellite 3D du parcours")
 
     view = pdk.ViewState(
         latitude=df_points.lat.mean(),
         longitude=df_points.lon.mean(),
-        zoom=12,
+        zoom=13,
         pitch=60,
         bearing=30,
     )
 
-    terrain_layer = pdk.Layer(
-        "TerrainLayer",
-        data=None,
-        elevation_decoder={"rScaler": 256, "gScaler": 1, "bScaler": 1/256, "offset": -32768},
-        texture="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
-        elevation_data="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
-        bounds=[df_points.lon.min()-0.02, df_points.lat.min()-0.02, df_points.lon.max()+0.02, df_points.lat.max()+0.02],
-    )
-
+    # Couche du parcours
     path_layer = pdk.Layer(
         "PathLayer",
         data=[{"path": df_points[["lon","lat"]].values.tolist(), "name": "Parcours"}],
@@ -263,10 +254,12 @@ if st.button("🚀 Lancer l’analyse complète"):
         width_min_pixels=4,
     )
 
+    # Carte satellite ESRI + relief
     deck = pdk.Deck(
-        map_style="https://basemaps.cartocdn.com/gl/satellite-style/style.json",
+        map_style="https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
         initial_view_state=view,
-        layers=[terrain_layer, path_layer],
-        tooltip={"text": "{name}"}
+        layers=[path_layer],
+        tooltip={"text": "{name}"},
     )
+
     st.pydeck_chart(deck)

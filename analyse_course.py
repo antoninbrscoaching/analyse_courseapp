@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 # ⚙️ CONFIGURATION
 # ------------------------------------------------------
 st.set_page_config(page_title="Analyse course complète", layout="wide")
-st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Profil)")
+st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Fatigue linéaire)")
 
 # ------------------------------------------------------
 # 🧩 UTILITAIRES
@@ -156,6 +156,21 @@ with col3:
     objectif_temps = st.text_input("Objectif (h:mm:ss)", value="")
 
 # ------------------------------------------------------
+# 💤 3️⃣ bis. FATIGUE LINÉAIRE
+# ------------------------------------------------------
+st.header("3️⃣ bis. Fatigue linéaire (optionnelle)")
+st.caption("L’allure régresse de manière linéaire sur toute la durée de la course (indépendamment du D+ ou de la météo).")
+
+fatigue_active = st.checkbox("Activer la fatigue linéaire", value=False)
+fatigue_rate = 0.0
+if fatigue_active:
+    fatigue_rate = st.slider(
+        "Pourcentage de régression à la fin de la course (%)",
+        min_value=0.0, max_value=30.0, step=0.5, value=5.0,
+        help="Ex: 5% signifie que ton allure est 5% plus lente à la fin qu’au début, de façon linéaire."
+    )
+
+# ------------------------------------------------------
 # 🧠 4. ANALYSE
 # ------------------------------------------------------
 if st.button("🚀 Lancer l’analyse complète"):
@@ -209,7 +224,18 @@ if st.button("🚀 Lancer l’analyse complète"):
         e_prev = np.interp(d-1000, dists, [p.elevation or 0 for p in points]) if i > 0 else e_cur
         d_up = max(0, e_cur - e_prev)
         d_down = max(0, e_prev - e_cur)
+
         t_km = base_s_per_km * (k_up**d_up) * (k_down**d_down)
+
+        # 👉 Appliquer une régression linéaire de fatigue
+        if fatigue_active and fatigue_rate > 0:
+            progression = d / total
+            fatigue_mult = 1.0 + (fatigue_rate / 100.0) * progression
+            t_km *= fatigue_mult
+        else:
+            fatigue_mult = 1.0
+
+        # Météo (ajustement indépendant)
         passage = dt_depart + timedelta(seconds=cum_time + t_km)
         w = find_weather_entry(meteo, passage)
         temp = w["temp"] if w else 20
@@ -217,12 +243,14 @@ if st.button("🚀 Lancer l’analyse complète"):
             t_km *= (k_temp_sup ** (temp - 20))
         else:
             t_km *= (k_temp_inf ** (20 - temp))
+
         cum_time += t_km
         results.append({
             "Km": i+1,
             "D+ (m)": round(d_up,1),
             "D- (m)": round(d_down,1),
             "Temp (°C)": round(temp,1),
+            "Fatigue (%)": f"{(fatigue_mult-1)*100:.2f}%",
             "Temps segment (s)": round(t_km,1),
             "Allure (min/km)": f"{int((t_km//60))}:{int(t_km%60):02d}"
         })

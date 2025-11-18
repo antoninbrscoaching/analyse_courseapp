@@ -16,7 +16,7 @@ st.set_page_config(page_title="Analyse course complète", layout="wide")
 st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Fatigue linéaire)")
 
 # ------------------------------------------------------
-# 🧩 UTILITAIRES
+# 🧩 UTILITAIRES GÉNÉRAUX
 # ------------------------------------------------------
 def hms_to_seconds(hms: str) -> int:
     try:
@@ -46,6 +46,9 @@ def gpx_to_df(points):
     )
 
 def parse_fit(file):
+    """
+    Récupère distance, D+ et D- depuis un fichier FIT.
+    """
     try:
         fit = FitFile(file)
         fit.parse()
@@ -69,6 +72,9 @@ def parse_fit(file):
 
 @st.cache_data(ttl=600)
 def fetch_weather(api_key, lat, lon):
+    """
+    Appel OpenWeather OneCall (hourly). Cache 10 minutes.
+    """
     if not api_key:
         return None
     url = (
@@ -96,29 +102,55 @@ def find_weather_entry(weather, target_dt):
     return {"temp": temp, "wind": wind}
 
 # ------------------------------------------------------
-# 🧠 MODÈLE LOG-LOG
+# 🧠 MODÈLE LOG-LOG (COEUR MATH)
 # ------------------------------------------------------
 def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
-    xs, ys = []
+    """
+    Ajuste le modèle log-log T = a * D^K à partir des références.
+
+    refs : liste de dicts :
+        {
+            "distance": en mètres,
+            "temps": "h:mm:ss",
+            "D_up": D+ en m,
+            "D_down": D- en m
+        }
+
+    On ramène d'abord chaque temps à un temps "équivalent plat"
+    en ENLEVANT l'effet du dénivelé via k_up / k_down.
+    """
     xs, ys = [], []
     for r in refs:
         d = r["distance"]
         t_raw = hms_to_seconds(r["temps"])
-        dup, ddn = r.get("D_up", 0), r.get("D_down", 0)
+        dup = r.get("D_up", 0)
+        ddn = r.get("D_down", 0)
+
+        # facteur d'effet du dénivelé (le même que tu appliques ensuite en prévision)
         elev_factor = (k_up ** dup) * (k_down ** ddn)
-        t_eq = t_raw / elev_factor
+
+        # Temps équivalent plat (on enlève l'effet du D+ / D-)
+        if elev_factor > 0:
+            t_eq = t_raw / elev_factor
+        else:
+            t_eq = t_raw
+
         if d > 0 and t_eq > 0:
             xs.append(math.log(d))
             ys.append(math.log(t_eq))
 
-    n = len(xs)
-    if n < 2:
-        raise ValueError("Il faut au moins 2 références.")
+    if len(xs) < 2:
+        raise ValueError("Il faut au moins deux références valides pour ajuster le modèle log-log.")
 
-    sum_x, sum_y = sum(xs), sum(ys)
+    n = len(xs)
+    sum_x = sum(xs)
+    sum_y = sum(ys)
     sum_xx = sum(x * x for x in xs)
     sum_xy = sum(x * y for x, y in zip(xs, ys))
+
     denom = n * sum_xx - sum_x ** 2
+    if denom == 0:
+        raise ValueError("Références dégénérées (distances identiques ?).")
 
     K = (n * sum_xy - sum_x * sum_y) / denom
     intercept = (sum_y - K * sum_x) / n
@@ -126,46 +158,58 @@ def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
     return a, K
 
 def predict_time_flat(distance_m, a, K):
+    """Temps prédit sur parcours plat, en secondes, à partir de T = a * D^K."""
     return a * (distance_m ** K)
 
-def apply_elevation(time_flat_s, du, dd, k_up=1.0, k_down=1.0):
-    return time_flat_s * (k_up ** du) * (k_down ** dd)
+def apply_elevation(time_flat_s, D_up, D_down, k_up=1.0, k_down=1.0):
+    """Applique l'effet du D+ / D- local à un temps plat."""
+    return time_flat_s * (k_up ** D_up) * (k_down ** D_down)
 
-def override_with_objective(distance_m, objectif_hms, K):
-    t_obj = hms_to_seconds(objectif_hms)
-    return t_obj / (distance_m ** K)
+def override_with_objective(distance_obj_m, time_obj_hms, K):
+    """
+    Recalage du modèle pour passer exactement par (distance_obj, temps_obj).
+    On garde K issu des références, on ajuste seulement a.
+    """
+    t_obj = hms_to_seconds(time_obj_hms)
+    if distance_obj_m <= 0:
+        raise ValueError("La distance objective doit être > 0.")
+    a_new = t_obj / (distance_obj_m ** K)
+    return a_new
 
 # ------------------------------------------------------
 # 🗺️ 1. CHARGEMENT GPX
 # ------------------------------------------------------
 st.header("1️⃣ Parcours GPX")
+st.caption("Charge le fichier GPX de ton parcours.")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
 
 # ------------------------------------------------------
-# 🧮 2. RÉFÉRENCES
+# 🧮 2. COURSES DE RÉFÉRENCE
 # ------------------------------------------------------
-st.header("2️⃣ Références")
+st.header("2️⃣ Courses de référence (manuel ou fichiers FIT)")
 if "n_refs" not in st.session_state:
     st.session_state.n_refs = 3
 
-col_add, col_rm = st.columns(2)
-with col_add:
-    if st.button("➕ Ajouter une référence") and st.session_state.n_refs < 6:
+cols = st.columns([1, 1])
+with cols[0]:
+    if st.button("➕ Ajouter une référence (max 6)") and st.session_state.n_refs < 6:
         st.session_state.n_refs += 1
-with col_rm:
+with cols[1]:
     if st.button("➖ Retirer une référence") and st.session_state.n_refs > 1:
         st.session_state.n_refs -= 1
 
+st.caption("Ces références servent à estimer ton profil de performance (modèle log-log).")
+
 refs = []
 for i in range(1, st.session_state.n_refs + 1):
-    st.subheader(f"Référence {i}")
+    st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         use_fit = st.checkbox(f"FIT ?", key=f"fit_use_{i}")
     with c2:
-        dist = st.number_input(f"Dist {i} (m)", value=5000 * i)
+        dist = st.number_input(f"Dist {i} (m)", value=5000 * i, step=100)
     with c3:
-        t = st.text_input(f"Temps {i}", value=f"0:{40+i*2}:00")
+        time_str = st.text_input(f"Temps {i} (h:mm:ss)", value=f"0:{40 + i * 2}:00")
     with c4:
         dup = st.number_input(f"D+ {i}", value=0)
     with c5:
@@ -173,174 +217,291 @@ for i in range(1, st.session_state.n_refs + 1):
     with c6:
         fit_file = st.file_uploader(f"FIT {i}", type=["fit"], key=f"fit_{i}") if use_fit else None
         if fit_file:
-            dat = parse_fit(fit_file)
-            if dat:
-                dist, dup, ddn = dat["distance"], dat["D_up"], dat["D_down"]
-                st.info(f"Distance={dist}m D+={dup} D-={ddn}")
-
-    refs.append(dict(distance=dist, temps=t, D_up=dup, D_down=ddn))
+            data_fit = parse_fit(fit_file)
+            if data_fit:
+                dist, dup, ddn = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
+                st.info(f"✔ FIT détecté : {dist} m | D+ {dup} | D- {ddn}")
+    refs.append(dict(distance=dist, temps=time_str, D_up=dup, D_down=ddn))
 
 # ------------------------------------------------------
 # ⚙️ 3. PARAMÈTRES
 # ------------------------------------------------------
-st.header("3️⃣ Paramètres")
+st.header("3️⃣ Paramètres de modélisation")
 
 c1, c2 = st.columns(2)
 with c1:
-    k_up = st.number_input("k montée", value=1.001)
-    k_down = st.number_input("k descente", value=0.999)
+    st.markdown("**Paramètres dénivelé**")
+    k_up = st.number_input("k_montée", value=1.001, help="Facteur multiplicatif par mètre de D+.")
+    k_down = st.number_input("k_descente", value=0.999, help="Facteur multiplicatif par mètre de D-.")
 with c2:
-    k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002)
-    k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998)
+    st.markdown("**Paramètres température**")
+    k_temp_sup = st.number_input(
+        "k_temp_sup (>20°C)", value=1.002, help="Impact par degré au-dessus de 20°C."
+    )
+    k_temp_inf = st.number_input(
+        "k_temp_inf (<20°C)", value=0.998, help="Impact par degré en-dessous de 20°C."
+    )
 
-lat = st.number_input("Latitude", value=48.8566)
-lon = st.number_input("Longitude", value=2.3522)
-API_KEY = st.text_input("Clé API météo", type="password")
+st.markdown("### Paramètres météo et objectif de course")
+col1, col2, col3 = st.columns(3)
 
-date_course = st.date_input("Date", value=date.today())
-heure_course = st.time_input("Heure", value=time(9, 0))
+with col1:
+    lat = st.number_input("Latitude", value=48.8566, help="Latitude du lieu de la course.")
+    lon = st.number_input("Longitude", value=2.3522, help="Longitude du lieu de la course.")
+    API_KEY = st.text_input(
+        "Clé API OpenWeather",
+        type="password",
+        help="Clé API pour récupérer la météo (optionnel)."
+    )
+
+with col2:
+    date_course = st.date_input("Date de la course", value=date.today())
+    heure_course = st.time_input("Heure départ", value=time(9, 0))
+
+with col3:
+    st.markdown("**Objectif de performance (optionnel)**")
+    objectif_distance_km = st.number_input(
+        "Distance de l'objectif (km)",
+        value=5.0,
+        min_value=0.5,
+        step=0.5,
+        help="Ex : 5 km si tu vises un chrono spécifique sur 5 km."
+    )
+    objectif_temps = st.text_input(
+        "Temps objectif (h:mm:ss)",
+        value="",
+        placeholder="Ex : 0:17:30 pour 17min30",
+        help=(
+            "Si renseigné, le modèle log-log sera recalé pour passer par ce point "
+            "(distance objectif, temps objectif)."
+        )
+    )
+
+# Pré-charger la météo à chaque rafraîchissement de l'appli
+meteo_data = fetch_weather(API_KEY, lat, lon) if API_KEY else None
+if API_KEY and meteo_data:
+    st.caption("🌤️ Données météo chargées pour ce lieu (mise à jour auto).")
+elif API_KEY and not meteo_data:
+    st.warning("Impossible de récupérer la météo avec cette clé / position.")
 
 # ------------------------------------------------------
-# FATIGUE
+# 💤 3️⃣ bis. FATIGUE LINÉAIRE
 # ------------------------------------------------------
-st.header("3️⃣ bis Fatigue linéaire")
-fatigue_active = st.checkbox("Activer fatigue")
-fatigue_rate = st.slider("Perte (%) fin course", 0.0, 30.0, 5.0) if fatigue_active else 0.0
+st.header("3️⃣ bis. Fatigue linéaire (optionnelle)")
+st.caption(
+    "L’allure régresse de manière linéaire sur toute la durée de la course "
+    "(indépendamment du D+ ou de la météo)."
+)
+
+fatigue_active = st.checkbox("Activer la fatigue linéaire", value=False)
+fatigue_rate = 0.0
+if fatigue_active:
+    fatigue_rate = st.slider(
+        "Pourcentage de régression à la fin de la course (%)",
+        min_value=0.0,
+        max_value=30.0,
+        step=0.5,
+        value=5.0,
+        help="Ex : 5% signifie que ton allure est 5% plus lente à la fin qu’au début, de façon linéaire."
+    )
 
 # ------------------------------------------------------
-# STOCKAGE (recalcul objectif)
+# 🧠 4. ANALYSE
 # ------------------------------------------------------
-if "rerun_with_objective" not in st.session_state:
-    st.session_state.rerun_with_objective = False
+st.header("4️⃣ Analyse et prédiction")
+st.caption("Clique sur le bouton ci-dessous une fois tous les paramètres renseignés.")
 
-if "second_distance" not in st.session_state:
-    st.session_state.second_distance = None
+if st.button("🚀 Lancer l’analyse complète"):
+    if not gpx_file:
+        st.error("⚠️ Upload d’abord un fichier GPX.")
+        st.stop()
 
-if "second_time" not in st.session_state:
-    st.session_state.second_time = None
-
-# ------------------------------------------------------
-# FONCTION DE PRÉDICTION
-# ------------------------------------------------------
-def run_prediction(distance_cible_km, objectif_temps_forced=None):
     gpx, points = parse_gpx_points(gpx_file)
     df_points = gpx_to_df(points)
+    if df_points.empty:
+        st.error("Fichier GPX invalide.")
+        st.stop()
 
-    # distance GPX
+    # -----------------------------
+    # Distance cumulée brute (GPX)
+    # -----------------------------
     dists = [0]
     total = 0
     for i in range(1, len(points)):
         total += points[i].distance_3d(points[i - 1])
         dists.append(total)
 
-    dist_gpx_km = total / 1000
-    facteur = distance_cible_km / dist_gpx_km if dist_gpx_km > 0 else 1
-    total_corr = total * facteur
-    dists_corr = [d * facteur for d in dists]
+    distance_gpx_km = total / 1000
+    st.info(f"📏 Distance totale GPX : {distance_gpx_km:.2f} km")
 
-    # modèle log-log
-    a, K = fit_loglog_model(refs, k_up=k_up, k_down=k_down)
-    st.info(f"K = {K:.4f}")
+    # -----------------------------
+    # Option A : distance GPX OU distance forcée
+    # -----------------------------
+    distance_mode = st.radio(
+        "Distance utilisée pour la prédiction",
+        ("Utiliser la distance du GPX", "Forcer une distance"),
+        index=0
+    )
 
-    if objectif_temps_forced:
-        a = override_with_objective(int(distance_cible_km * 1000), objectif_temps_forced, K)
-        st.success(f"🔄 Modèle recalé sur {distance_cible_km} km en {objectif_temps_forced}")
+    if distance_mode == "Utiliser la distance du GPX":
+        distance_cible_km = distance_gpx_km
+        facteur_dist = 1.0
+        st.success(f"📏 Distance utilisée : {distance_cible_km:.2f} km (GPX)")
+    else:
+        distance_forced_km = st.number_input(
+            "Distance forcée (km)",
+            value=float(round(distance_gpx_km, 2)),
+            min_value=0.5,
+            step=0.1,
+            help="Permet de forcer une distance officielle si le GPX n'est pas précis."
+        )
+        distance_cible_km = distance_forced_km
+        if distance_gpx_km > 0:
+            facteur_dist = distance_forced_km / distance_gpx_km
+        else:
+            facteur_dist = 1.0
+        st.success(f"📏 Distance utilisée : {distance_cible_km:.2f} km (forcée)")
 
-    base_flat = predict_time_flat(int(distance_cible_km * 1000), a, K)
-    base_km_flat = base_flat / distance_cible_km
+    total_corr = total * facteur_dist
+    dists_corr = [d * facteur_dist for d in dists]  # on étire/comprime l'axe distance
 
+    # -----------------------------
+    # Ajustement du modèle log-log
+    # -----------------------------
+    try:
+        a, K = fit_loglog_model(refs, k_up=k_up, k_down=k_down)
+    except ValueError as e:
+        st.error(f"Problème lors de l’ajustement du modèle log-log : {e}")
+        st.stop()
+
+    st.info(f"📐 Exposant log-log estimé : {K:.4f}")
+
+    # -----------------------------
+    # Recalage éventuel avec un objectif
+    # (ex : 17:30 sur 5 km plat)
+    # -----------------------------
+    if objectif_temps:
+        d_obj_m = int(objectif_distance_km * 1000)
+        try:
+            a = override_with_objective(d_obj_m, objectif_temps, K)
+            st.success(
+                f"🎯 Modèle recalé pour passer par "
+                f"{objectif_distance_km:.1f} km en {objectif_temps} (sur plat)."
+            )
+        except ValueError as e:
+            st.warning(f"Objectif ignoré (problème de saisie) : {e}")
+
+    # -----------------------------
+    # Temps plat global sur la distance cible
+    # -----------------------------
+    distance_cible_m = int(distance_cible_km * 1000)
+    base_flat_total = predict_time_flat(distance_cible_m, a, K)
+    base_s_per_km_flat = base_flat_total / distance_cible_km
+
+    dt_depart = datetime.combine(date_course, heure_course)
+
+    # -----------------------------
+    # Prévision km par km
+    # -----------------------------
     km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
     if total_corr % 1000 != 0:
         km_marks.append(total_corr)
 
-    elev_list = [p.elevation or 0 for p in points]
     results = []
-    cum = 0
+    cum_time = 0
 
-    dt_depart = datetime.combine(date_course, heure_course)
-    meteo = fetch_weather(API_KEY, lat, lon) if API_KEY else None
+    elev_list = [p.elevation or 0 for p in points]
 
     for i, d in enumerate(km_marks):
+        # Altitude interpolée sur la distance corrigée
         e_cur = np.interp(d, dists_corr, elev_list)
-        e_prev = np.interp(d - 1000, dists_corr, elev_list) if i > 0 else e_cur
-        du, dd = max(0, e_cur - e_prev), max(0, e_prev - e_cur)
-
-        t_km = apply_elevation(base_km_flat, du, dd, k_up, k_down)
-
-        # fatigue
-        if fatigue_active and total_corr > 0:
-            t_km *= 1 + (fatigue_rate / 100) * (d / total_corr)
-
-        # météo
-        passage = dt_depart + timedelta(seconds=cum + t_km)
-        w = find_weather_entry(meteo, passage) if meteo else None
-        if w:
-            temp = w["temp"]
-            if temp > 20:
-                t_km *= k_temp_sup ** (temp - 20)
-            else:
-                t_km *= k_temp_inf ** (20 - temp)
+        if i > 0:
+            e_prev = np.interp(d - 1000, dists_corr, elev_list)
         else:
-            temp = 20
+            e_prev = e_cur
 
-        cum += t_km
-        results.append({
-            "Km": i+1,
-            "D+": round(du,1),
-            "D-": round(dd,1),
-            "Temp": round(temp,1),
-            "Temps km": seconds_to_hms(t_km),
-            "Cumul": seconds_to_hms(cum)
-        })
+        d_up = max(0, e_cur - e_prev)
+        d_down = max(0, e_prev - e_cur)
 
-    st.success(f"⏱ Temps total : {seconds_to_hms(cum)}")
-    st.dataframe(pd.DataFrame(results), use_container_width=True)
+        # Temps plat "moyen" sur ce km
+        t_km_flat = base_s_per_km_flat
 
-# ------------------------------------------------------
-# 4️⃣ ANALYSE + REAJUSTEMENT
-# ------------------------------------------------------
-st.header("4️⃣ Analyse et prédiction")
+        # Application du D+ / D- local
+        t_km = apply_elevation(t_km_flat, d_up, d_down, k_up=k_up, k_down=k_down)
 
-if st.button("🚀 Lancer l’analyse complète"):
-    if not gpx_file:
-        st.error("Importer un GPX d'abord.")
-        st.stop()
+        # 👉 Fatigue linéaire
+        if fatigue_active and fatigue_rate > 0 and total_corr > 0:
+            progression = d / total_corr  # de 0 à 1 sur la course
+            fatigue_mult = 1.0 + (fatigue_rate / 100.0) * progression
+            t_km *= fatigue_mult
+        else:
+            fatigue_mult = 1.0
 
-    gpx, pts = parse_gpx_points(gpx_file)
-    total_gpx = sum(
-        pts[i].distance_3d(pts[i-1]) for i in range(1, len(pts))
-    ) / 1000
+        # Météo (ajustement indépendant)
+        passage = dt_depart + timedelta(seconds=cum_time + t_km)
+        w = find_weather_entry(meteo_data, passage) if meteo_data else None
+        temp = w["temp"] if w else 20
+        if temp > 20:
+            t_km *= (k_temp_sup ** (temp - 20))
+        else:
+            t_km *= (k_temp_inf ** (20 - temp))
 
-    distance_mode = st.radio(
-        "Distance utilisée",
-        ("GPX", "Forcer distance"),
-        index=0
-    )
-
-    if distance_mode == "GPX":
-        distance_cible = total_gpx
-    else:
-        distance_cible = st.number_input(
-            "Distance forcée (km)", value=total_gpx, min_value=0.5
+        cum_time += t_km
+        results.append(
+            {
+                "Km": i + 1,
+                "D+ (m)": round(d_up, 1),
+                "D- (m)": round(d_down, 1),
+                "Temp (°C)": round(temp, 1),
+                "Fatigue (%)": f"{(fatigue_mult - 1) * 100:.2f}%",
+                "Temps segment (s)": round(t_km, 1),
+                "Allure (min/km)": f"{int(t_km // 60)}:{int(t_km % 60):02d}",
+                "Temps cumulé": seconds_to_hms(cum_time),
+            }
         )
 
-    st.session_state.rerun_with_objective = False
-    run_prediction(distance_cible)
+    total_time = seconds_to_hms(sum(r["Temps segment (s)"] for r in results))
+    st.success(f"⏱️ Temps total prévisionnel : {total_time}")
 
-    # Second module
-    st.subheader("➕ Ajuster distance & temps pour une seconde estimation")
-    st.session_state.second_distance = st.number_input(
-        "Distance (km)", value=distance_cible, min_value=0.1
+    st.subheader("📋 Détails km par km")
+    df_results = pd.DataFrame(results)
+    st.dataframe(df_results, use_container_width=True)
+
+    # ------------------------------------------------------
+    # 🗺️ CARTE SIMPLE 2D
+    # ------------------------------------------------------
+    st.subheader("🗺️ Carte du parcours")
+    view = pdk.ViewState(
+        latitude=df_points.lat.mean(),
+        longitude=df_points.lon.mean(),
+        zoom=13,
+        pitch=0,
     )
-    st.session_state.second_time = st.text_input(
-        "Temps objectif (h:mm:ss)", placeholder="00:17:30"
+    path_layer = pdk.Layer(
+        "PathLayer",
+        data=[{"path": df_points[["lon", "lat"]].values.tolist(), "name": "Parcours"}],
+        get_path="path",
+        get_color=[255, 0, 0],
+        width_min_pixels=4,
     )
+    deck = pdk.Deck(
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        initial_view_state=view,
+        layers=[path_layer],
+        tooltip={"text": "{name}"},
+    )
+    st.pydeck_chart(deck, use_container_width=True)
 
-    if st.button("🔁 Recalculer avec cet objectif"):
-        st.session_state.rerun_with_objective = True
-        st.experimental_rerun()
+    # ------------------------------------------------------
+    # 📈 PROFIL D’ALTITUDE
+    # ------------------------------------------------------
+    st.subheader("📊 Profil d’altitude")
 
-if st.session_state.rerun_with_objective:
-    d = st.session_state.second_distance
-    t = st.session_state.second_time
-    run_prediction(d, t)
+    plt.figure(figsize=(10, 4))
+    x_km = np.linspace(0, distance_cible_km, len(df_points))
+    plt.plot(x_km, df_points["elev"])
+    plt.xlabel("Distance (km)")
+    plt.ylabel("Altitude (m)")
+    plt.title("Profil d’altitude du parcours")
+    plt.grid(alpha=0.3)
+    st.pyplot(plt)

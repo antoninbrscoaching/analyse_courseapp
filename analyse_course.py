@@ -204,7 +204,7 @@ c1, c2 = st.columns(2)
 # ----------------- Colonne 1 -----------------
 with c1:
     # Coefficients élévation
-    use_elev_coeff = st.checkbox("Activer coefficients montée/descente ?", value=True)
+    use_elev_coeff = st.checkbox("Activer coefficients montée/descente🎢", value=True)
     if use_elev_coeff:
         k_up = st.number_input("Coefficient montée (k_up)", value=1.040, format="%.3f")
         k_down = st.number_input("Coefficient descente (k_down)", value=0.996, format="%.3f")
@@ -215,7 +215,7 @@ with c1:
 # ----------------- Colonne 2 -----------------
 with c2:
     # Coefficients température
-    use_temp_coeff = st.checkbox("Activer coefficients température ?", value=True)
+    use_temp_coeff = st.checkbox("Activer coefficients température🌡️", value=True)
     if use_temp_coeff:
         k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002, format="%.3f")
         k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998, format="%.3f")

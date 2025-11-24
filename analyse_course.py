@@ -200,38 +200,36 @@ for i in range(1, st.session_state.n_refs + 1):
 st.header("3️⃣ Paramètres modèle")
 
 c1, c2 = st.columns(2)
+
+# ----------------- Colonne 1 -----------------
 with c1:
-    # Checkbox unique pour activer/désactiver les coefficients de montée/descente
+    # Coefficients élévation
     use_elev_coeff = st.checkbox("Activer coefficients montée/descente ?", value=True)
     if use_elev_coeff:
-        col_up, col_down = st.columns(2)
-        with col_up:
-            k_up = st.number_input("Coefficient montée (k_up)", value=1.040)
-        with col_down:
-            k_down = st.number_input("Coefficient descente (k_down)", value=0.996)
+        k_up = st.number_input("Coefficient montée (k_up)", value=1.040, format="%.3f")
+        k_down = st.number_input("Coefficient descente (k_down)", value=0.996, format="%.3f")
     else:
         k_up = 1.0
         k_down = 1.0
 
+# ----------------- Colonne 2 -----------------
 with c2:
-    # Checkbox unique pour activer/désactiver les coefficients de température
+    # Coefficients température
     use_temp_coeff = st.checkbox("Activer coefficients température ?", value=True)
     if use_temp_coeff:
-        col_sup, col_inf = st.columns(2)
-        with col_sup:
-            k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002)
-        with col_inf:
-            k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998)
+        k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002, format="%.3f")
+        k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998, format="%.3f")
     else:
         k_temp_sup = 1.0
         k_temp_inf = 1.0
 
-# --- Localisation et météo ---
+# ----------------- Latitude / Longitude / API -----------------
 col1, col2 = st.columns(2)
 with col1:
     lat = st.number_input("Latitude", value=48.8566)
     lon = st.number_input("Longitude", value=2.3522)
     API_KEY = st.text_input("Clé API OpenWeather", type="password")
+
 with col2:
     date_course = st.date_input("Date", value=date.today())
     heure_course = st.time_input("Départ", value=time(9,0))

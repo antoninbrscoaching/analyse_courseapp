@@ -41,7 +41,9 @@ def parse_gpx_points(file):
     return gpx, points
 
 def gpx_to_df(points):
-    return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0} for p in points])
+    return pd.DataFrame(
+        [{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0} for p in points]
+    )
 
 def parse_fit(file):
     try:
@@ -69,7 +71,10 @@ def parse_fit(file):
 def fetch_weather(api_key, lat, lon):
     if not api_key:
         return None
-    url = f"https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+    url = (
+        "https://api.openweathermap.org/data/2.5/onecall"
+        f"?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+    )
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
@@ -93,33 +98,44 @@ def find_weather_entry(weather, target_dt):
 # 🧠 MODÈLE LOG-LOG
 # ------------------------------------------------------
 def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
-    xs, ys = [], []
+    xs = []
+    ys = []
     for r in refs:
         d = r["distance"]
         t_raw = hms_to_seconds(r["temps"])
         dup = r.get("D_up", 0)
         ddn = r.get("D_down", 0)
+
         elev_factor = (k_up ** dup) * (k_down ** ddn)
         t_eq = t_raw / elev_factor if elev_factor > 0 else t_raw
+
         if d > 0 and t_eq > 0:
             xs.append(math.log(d))
             ys.append(math.log(t_eq))
-    if len(xs) < 2:
+
+    n = len(xs)
+    if n < 2:
         raise ValueError("Il faut deux références minimum.")
-    sum_x, sum_y = sum(xs), sum(ys)
+
+    sum_x = sum(xs)
+    sum_y = sum(ys)
     sum_xx = sum(x*x for x in xs)
     sum_xy = sum(x*y for x, y in zip(xs, ys))
-    denom = len(xs) * sum_xx - sum_x**2
+
+    denom = n * sum_xx - sum_x**2
     if denom == 0:
         raise ValueError("Distances identiques.")
-    K = (len(xs) * sum_xy - sum_x * sum_y) / denom
-    a = math.exp((sum_y - K * sum_x) / len(xs))
+
+    K = (n * sum_xy - sum_x * sum_y) / denom
+    a = math.exp((sum_y - K * sum_x) / n)
+
     return a, K
 
 def predict_time_flat(distance_m, a, K):
     return a * (distance_m ** K)
 
 def apply_elevation_gradient_route(base_time_s, D_up_m, D_down_m, segment_length_m=1000, k_up=1.001, k_down=0.999):
+    """Applique un facteur de montée/descente basé sur le gradient décimal (route)"""
     if segment_length_m <= 0:
         return base_time_s
     g_up = D_up_m / segment_length_m
@@ -157,6 +173,7 @@ refs = []
 for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
+
     with c1:
         use_fit = st.checkbox(f"FIT ?", key=f"use_fit_{i}")
     with c2:
@@ -174,26 +191,35 @@ for i in range(1, st.session_state.n_refs + 1):
             if data_fit:
                 dist, dup, ddn = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
                 st.info(f"✔ FIT détecté : {dist}m | D+{dup} | D-{ddn}")
+
     refs.append(dict(distance=dist, temps=temps, D_up=dup, D_down=ddn))
 
 # ------------------------------------------------------
-# ⚙️ 3. PARAMÈTRES
+# ⚙️ 3. PARAMÈTRES (avec 3 décimales et activation individuelle)
 # ------------------------------------------------------
 st.header("3️⃣ Paramètres modèle")
+
+# --- Coefficients montée/descente ---
+st.subheader("🏔️ Coefficients élévation")
 c1, c2 = st.columns(2)
 with c1:
-    use_elev_coeff = st.checkbox("Activer coefficients montée/descente ?", value=True)
-    if use_elev_coeff:
-        k_up = st.number_input("Coefficient montée (k_up)", value=1.04)
-        k_down = st.number_input("Coefficient descente (k_down)", value=0.996)
-    else:
-        k_up = 1.0
-        k_down = 1.0
-
+    use_k_up = st.checkbox("Activer coefficient montée (k_up)", value=True)
+    k_up = st.number_input("Coefficient montée (k_up)", value=1.040, format="%.3f", step=0.001) if use_k_up else 1.0
 with c2:
-    k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002)
-    k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998)
+    use_k_down = st.checkbox("Activer coefficient descente (k_down)", value=True)
+    k_down = st.number_input("Coefficient descente (k_down)", value=0.996, format="%.3f", step=0.001) if use_k_down else 1.0
 
+# --- Coefficients température ---
+st.subheader("🌡️ Coefficients température")
+c3, c4 = st.columns(2)
+with c3:
+    use_k_temp_sup = st.checkbox("Activer k_temp_sup (>20°C)", value=True)
+    k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002, format="%.3f", step=0.001) if use_k_temp_sup else 1.0
+with c4:
+    use_k_temp_inf = st.checkbox("Activer k_temp_inf (<20°C)", value=True)
+    k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998, format="%.3f", step=0.001) if use_k_temp_inf else 1.0
+
+# --- Localisation et météo ---
 col1, col2 = st.columns(2)
 with col1:
     lat = st.number_input("Latitude", value=48.8566)
@@ -220,51 +246,60 @@ if fatigue_active:
 st.header("4️⃣ Analyse et prédiction route")
 st.caption("1️⃣ Calcul sur la distance GPX avec facteurs montée/descente\n2️⃣ Puis éventuellement distance/temps forcés")
 
+# État pour savoir si un premier calcul a déjà été fait
 if "first_run_done" not in st.session_state:
     st.session_state.first_run_done = False
 if "distance_gpx_km" not in st.session_state:
     st.session_state.distance_gpx_km = None
 
-# ------------------------------------------------------
-# Fonction principale run_prediction
-# ------------------------------------------------------
 def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False):
+    """Exécute la prédiction complète route. Utilise gradient + coefficients k_up/k_down."""
     if not gpx_file:
         st.error("⚠️ Importer un fichier GPX d’abord.")
         return
+
+    # --- Lecture GPX ---
     gpx, points = parse_gpx_points(gpx_file)
     df_points = gpx_to_df(points)
     if df_points.empty:
         st.error("Fichier GPX invalide.")
         return
 
+    # Distance cumulée brute (GPX)
     dists = [0]
     total = 0
     for i in range(1, len(points)):
         total += points[i].distance_3d(points[i - 1])
         dists.append(total)
+
     distance_gpx_km = total / 1000
     st.session_state.distance_gpx_km = distance_gpx_km
 
+    # Facteur pour adapter la distance cible (si distance forcée)
     facteur_dist = distance_cible_km / distance_gpx_km if distance_gpx_km > 0 else 1.0
     total_corr = total * facteur_dist
     dists_corr = [d * facteur_dist for d in dists]
 
+    # --- Modèle log-log ---
     try:
         a, K = fit_loglog_model(refs, k_up=k_up, k_down=k_down)
     except ValueError as e:
         st.error(f"Problème lors de l’ajustement du modèle log-log : {e}")
         return
+
     st.info(f"📐 Exposant log-log estimé : {K:.4f}")
 
+    # Recalage éventuel avec un temps objectif forcé
     if objectif_temps_forced:
         a = override_with_objective(int(distance_cible_km * 1000), objectif_temps_forced, K)
         st.success(f"🎯 Modèle recalé pour {distance_cible_km:.2f} km en {objectif_temps_forced} (sur plat)")
 
+    # Temps plat global sur la distance cible
     distance_cible_m = int(distance_cible_km * 1000)
     base_flat_total = predict_time_flat(distance_cible_m, a, K)
     base_s_per_km_flat = base_flat_total / distance_cible_km
 
+    # --- Prévision km par km ---
     km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
     if total_corr % 1000 != 0:
         km_marks.append(total_corr)
@@ -277,21 +312,31 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
     for i, d in enumerate(km_marks):
         e_cur = np.interp(d, dists_corr, elev_list)
         e_prev = np.interp(d - 1000, dists_corr, elev_list) if i > 0 else e_cur
+
         d_up = max(0, e_cur - e_prev)
         d_down = max(0, e_prev - e_cur)
 
-        t_km = apply_elevation_gradient_route(base_s_per_km_flat, d_up, d_down, segment_length_m=1000, k_up=k_up, k_down=k_down)
+        # Temps segment route avec gradient + coefficients
+        t_km = apply_elevation_gradient_route(
+            base_s_per_km_flat,
+            d_up, d_down,
+            segment_length_m=1000,
+            k_up=k_up,
+            k_down=k_down
+        )
 
+        # Fatigue linéaire
         if fatigue_active and fatigue_rate > 0 and total_corr > 0:
             progression = d / total_corr
             t_km *= (1 + (fatigue_rate / 100.0) * progression)
 
+        # Météo
         passage = dt_depart + timedelta(seconds=cum_time + t_km)
         w = find_weather_entry(meteo_data, passage) if meteo_data else None
         temp = w["temp"] if w else 20
-        if temp > 20:
+        if temp > 20 and use_k_temp_sup:
             t_km *= (k_temp_sup ** (temp - 20))
-        else:
+        elif temp < 20 and use_k_temp_inf:
             t_km *= (k_temp_inf ** (20 - temp))
 
         cum_time += t_km
@@ -332,36 +377,12 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
     return distance_gpx_km
 
 # ------------------------------------------------------
-# 4.1 Premier calcul
+# 4.1 PREMIER CALCUL (distance GPX)
 # ------------------------------------------------------
 st.subheader("4️⃣.1 Calcul initial (distance GPX)")
 if st.button("🚀 Lancer l’analyse sur la distance GPX"):
     if not gpx_file:
         st.error("⚠️ Importer un fichier GPX d’abord.")
     else:
-        distance_gpx_km = run_prediction(distance_cible_km=1.0, objectif_temps_forced=None, show_map=True)
-        if distance_gpx_km:
-            st.session_state.first_run_done = True
-            st.session_state.distance_gpx_km = distance_gpx_km
-
-# ------------------------------------------------------
-# 4.2 Ajustement distance / temps
-# ------------------------------------------------------
-if st.session_state.first_run_done and st.session_state.distance_gpx_km:
-    st.subheader("4️⃣.2 Ajuster distance et/ou temps objectif")
-    distance_gpx_km = st.session_state.distance_gpx_km
-
-    # Distance forcée
-    use_forced_distance = st.checkbox("Forcer la distance ?", value=False)
-    distance_cible_km = distance_gpx_km
-    if use_forced_distance:
-        distance_cible_km = st.number_input("Distance forcée (km)", value=float(round(distance_gpx_km, 2)), min_value=0.5, step=0.1)
-
-    # Temps objectif
-    use_forced_time = st.checkbox("Forcer un temps objectif ?", value=False)
-    objectif_temps_forced = None
-    if use_forced_time:
-        objectif_temps_forced = st.text_input("Temps objectif (h:mm:ss)", value="0:17:30")
-
-    if st.button("📊 Calculer prédiction finale"):
-        run_prediction(distance_cible_km=distance_cible_km, objectif_temps_forced=objectif_temps_forced, show_map=True)
+        dummy_distance = 1.0
+        distance_gpx_km = run_prediction(distance_cible_km=dummy_distance,

@@ -195,29 +195,36 @@ for i in range(1, st.session_state.n_refs + 1):
     refs.append(dict(distance=dist, temps=temps, D_up=dup, D_down=ddn))
 
 # ------------------------------------------------------
-# ⚙️ 3. PARAMÈTRES (avec 3 décimales et activation individuelle)
+# ⚙️ 3. PARAMÈTRES
 # ------------------------------------------------------
 st.header("3️⃣ Paramètres modèle")
 
-# --- Coefficients montée/descente ---
-st.subheader("🏔️ Coefficients élévation")
 c1, c2 = st.columns(2)
 with c1:
-    use_k_up = st.checkbox("Activer coefficient montée (k_up)", value=True)
-    k_up = st.number_input("Coefficient montée (k_up)", value=1.040, format="%.3f", step=0.001) if use_k_up else 1.0
-with c2:
-    use_k_down = st.checkbox("Activer coefficient descente (k_down)", value=True)
-    k_down = st.number_input("Coefficient descente (k_down)", value=0.996, format="%.3f", step=0.001) if use_k_down else 1.0
+    # Checkbox unique pour activer/désactiver les coefficients de montée/descente
+    use_elev_coeff = st.checkbox("Activer coefficients montée/descente ?", value=True)
+    if use_elev_coeff:
+        col_up, col_down = st.columns(2)
+        with col_up:
+            k_up = st.number_input("Coefficient montée (k_up)", value=1.040)
+        with col_down:
+            k_down = st.number_input("Coefficient descente (k_down)", value=0.996)
+    else:
+        k_up = 1.0
+        k_down = 1.0
 
-# --- Coefficients température ---
-st.subheader("🌡️ Coefficients température")
-c3, c4 = st.columns(2)
-with c3:
-    use_k_temp_sup = st.checkbox("Activer k_temp_sup (>20°C)", value=True)
-    k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002, format="%.3f", step=0.001) if use_k_temp_sup else 1.0
-with c4:
-    use_k_temp_inf = st.checkbox("Activer k_temp_inf (<20°C)", value=True)
-    k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998, format="%.3f", step=0.001) if use_k_temp_inf else 1.0
+with c2:
+    # Checkbox unique pour activer/désactiver les coefficients de température
+    use_temp_coeff = st.checkbox("Activer coefficients température ?", value=True)
+    if use_temp_coeff:
+        col_sup, col_inf = st.columns(2)
+        with col_sup:
+            k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002)
+        with col_inf:
+            k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998)
+    else:
+        k_temp_sup = 1.0
+        k_temp_inf = 1.0
 
 # --- Localisation et météo ---
 col1, col2 = st.columns(2)

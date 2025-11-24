@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 # ------------------------------------------------------
 # ⚙️ CONFIGURATION
 # ------------------------------------------------------
-st.set_page_config(page_title="Analyse course complète", layout="wide")
+st.set_page_config(page_title="Prédiction course route", layout="wide")
 st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Fatigue linéaire)")
 
 # ------------------------------------------------------
@@ -98,7 +98,6 @@ def find_weather_entry(weather, target_dt):
 # 🧠 MODÈLE LOG-LOG
 # ------------------------------------------------------
 def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
-    xs, ys = []
     xs = []
     ys = []
     for r in refs:
@@ -135,8 +134,16 @@ def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
 def predict_time_flat(distance_m, a, K):
     return a * (distance_m ** K)
 
-def apply_elevation(time_flat_s, D_up, D_down, k_up, k_down):
-    return time_flat_s * (k_up ** D_up) * (k_down ** D_down)
+# Nouvelle fonction basée sur gradient pour la route
+def apply_elevation_gradient_route(base_time_s, D_up_m, D_down_m, segment_length_m=1000, k_up=1.001, k_down=0.999):
+    """Applique un facteur de montée/descente basé sur le gradient décimal (route)"""
+    if segment_length_m <= 0:
+        return base_time_s
+    g_up = D_up_m / segment_length_m
+    g_down = D_down_m / segment_length_m
+    factor_up = k_up ** (g_up * segment_length_m)  # exponentielle selon le gradient
+    factor_down = k_down ** (g_down * segment_length_m)
+    return base_time_s * factor_up * factor_down
 
 def override_with_objective(distance_obj_m, time_obj_hms, K):
     t_obj = hms_to_seconds(time_obj_hms)
@@ -225,8 +232,8 @@ if fatigue_active:
 # ------------------------------------------------------
 # 🧠 4. ANALYSE
 # ------------------------------------------------------
-st.header("4️⃣ Analyse et prédiction")
-st.caption("1️⃣ D’abord calcul sur la distance GPX\n2️⃣ Puis éventuellement distance/temps forcés")
+st.header("4️⃣ Analyse et prédiction route")
+st.caption("1️⃣ Calcul sur la distance GPX avec facteurs montée/descente\n2️⃣ Puis éventuellement distance/temps forcés")
 
 # État pour savoir si un premier calcul a déjà été fait
 if "first_run_done" not in st.session_state:
@@ -235,7 +242,7 @@ if "distance_gpx_km" not in st.session_state:
     st.session_state.distance_gpx_km = None
 
 def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False):
-    """Exécute la prédiction complète. Peut utiliser un objectif forcé."""
+    """Exécute la prédiction complète route. Utilise gradient + coefficients k_up/k_down."""
     if not gpx_file:
         st.error("⚠️ Importer un fichier GPX d’abord.")
         return
@@ -294,15 +301,14 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
     dt_depart = datetime.combine(date_course, heure_course)
 
     for i, d in enumerate(km_marks):
-        # Altitude interpolée sur la distance corrigée
         e_cur = np.interp(d, dists_corr, elev_list)
         e_prev = np.interp(d - 1000, dists_corr, elev_list) if i > 0 else e_cur
 
         d_up = max(0, e_cur - e_prev)
         d_down = max(0, e_prev - e_cur)
 
-        # Temps plat sur ce km
-        t_km = apply_elevation(base_s_per_km_flat, d_up, d_down, k_up, k_down)
+        # Temps segment route avec gradient + coefficients
+        t_km = apply_elevation_gradient_route(base_s_per_km_flat, d_up, d_down, segment_length_m=1000, k_up=k_up, k_down=k_down)
 
         # Fatigue linéaire
         if fatigue_active and fatigue_rate > 0 and total_corr > 0:
@@ -336,28 +342,11 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
     st.subheader("📋 Détails km par km")
     st.dataframe(df_results, use_container_width=True)
 
-    # --- Carte et profil d’altitude uniquement sur le premier calcul (ou si show_map=True) ---
     if show_map:
         st.subheader("🗺️ Carte du parcours")
-        view = pdk.ViewState(
-            latitude=df_points.lat.mean(),
-            longitude=df_points.lon.mean(),
-            zoom=13,
-            pitch=0,
-        )
-        path_layer = pdk.Layer(
-            "PathLayer",
-            data=[{"path": df_points[["lon", "lat"]].values.tolist(), "name": "Parcours"}],
-            get_path="path",
-            get_color=[255, 0, 0],
-            width_min_pixels=4,
-        )
-        deck = pdk.Deck(
-            map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-            initial_view_state=view,
-            layers=[path_layer],
-            tooltip={"text": "{name}"},
-        )
+        view = pdk.ViewState(latitude=df_points.lat.mean(), longitude=df_points.lon.mean(), zoom=13, pitch=0)
+        path_layer = pdk.Layer("PathLayer", data=[{"path": df_points[["lon","lat"]].values.tolist(), "name":"Parcours"}], get_path="path", get_color=[255,0,0], width_min_pixels=4)
+        deck = pdk.Deck(map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json", initial_view_state=view, layers=[path_layer], tooltip={"text":"{name}"})
         st.pydeck_chart(deck, use_container_width=True)
 
         st.subheader("📊 Profil d’altitude")
@@ -370,20 +359,17 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
         plt.grid(alpha=0.3)
         st.pyplot(plt)
 
-    return distance_gpx_km  # pour stocker la distance GPX si besoin
+    return distance_gpx_km
 
 # ------------------------------------------------------
-# 4.1 PREMIER CALCUL (toujours distance GPX)
+# 4.1 PREMIER CALCUL (distance GPX)
 # ------------------------------------------------------
 st.subheader("4️⃣.1 Calcul initial (distance GPX)")
 if st.button("🚀 Lancer l’analyse sur la distance GPX"):
     if not gpx_file:
         st.error("⚠️ Importer un fichier GPX d’abord.")
     else:
-        # On commence par utiliser la distance GPX brute comme distance cible
-        # (le run_prediction recalculera cette distance à partir du GPX)
-        dummy_distance = 1.0  # valeur temporaire, sera corrigée dans run_prediction
-        # On laisse run_prediction recalculer et stocker la vraie distance GPX
+        dummy_distance = 1.0
         distance_gpx_km = run_prediction(distance_cible_km=dummy_distance, objectif_temps_forced=None, show_map=True)
         if distance_gpx_km:
             st.session_state.first_run_done = True
@@ -397,7 +383,6 @@ if st.session_state.first_run_done and st.session_state.distance_gpx_km:
 
     distance_gpx_km = st.session_state.distance_gpx_km
 
-    # Coche : forcer la distance
     use_forced_distance = st.checkbox("Forcer la distance ?", value=False)
     distance_cible_km = distance_gpx_km
     if use_forced_distance:
@@ -408,22 +393,7 @@ if st.session_state.first_run_done and st.session_state.distance_gpx_km:
             step=0.1
         )
 
-    # Coche : forcer un temps objectif
     use_forced_time = st.checkbox("Forcer un temps objectif ?", value=False)
     objectif_temps_forced = None
     if use_forced_time:
-        objectif_temps_forced = st.text_input(
-            "Temps objectif (h:mm:ss)",
-            value="0:17:30",
-            help="Exemple : 0:17:30 pour 17 min 30"
-        )
-
-    if st.button("🔁 Recalculer avec ces paramètres"):
-        if use_forced_time and (not objectif_temps_forced or objectif_temps_forced.strip() == ""):
-            st.warning("Merci de renseigner un temps objectif ou de décocher l’option.")
-        else:
-            run_prediction(distance_cible_km=distance_cible_km,
-                           objectif_temps_forced=objectif_temps_forced,
-                           show_map=False)
-else:
-    st.info("🔎 Lance d’abord l’analyse sur la distance GPX pour pouvoir ajuster distance/temps.")
+        objectif_temps_forced = st.text_input("Temps objectif (h:mm:ss)", value="0:17:30

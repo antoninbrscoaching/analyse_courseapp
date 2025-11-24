@@ -384,5 +384,45 @@ if st.button("🚀 Lancer l’analyse sur la distance GPX"):
     if not gpx_file:
         st.error("⚠️ Importer un fichier GPX d’abord.")
     else:
-        dummy_distance = 1.0
-        distance_gpx_km = run_prediction(distance_cible_km=dummy_distance,
+        dummy_distance = 1.0  # juste pour initialiser la distance
+        distance_gpx_km = run_prediction(
+            distance_cible_km=dummy_distance,
+            objectif_temps_forced=None,
+            show_map=True
+        )
+        if distance_gpx_km:
+            st.session_state.first_run_done = True
+            st.session_state.distance_gpx_km = distance_gpx_km
+
+# ------------------------------------------------------
+# 4.2 SECOND CALCUL (distance / temps forcés)
+# ------------------------------------------------------
+if st.session_state.first_run_done and st.session_state.distance_gpx_km:
+    st.subheader("4️⃣.2 Ajuster distance et/ou temps objectif")
+
+    distance_gpx_km = st.session_state.distance_gpx_km
+
+    # Forcer la distance
+    use_forced_distance = st.checkbox("Forcer la distance ?", value=False)
+    distance_cible_km = distance_gpx_km
+    if use_forced_distance:
+        distance_cible_km = st.number_input(
+            "Distance forcée (km)",
+            value=float(round(distance_gpx_km, 2)),
+            min_value=0.5,
+            step=0.1
+        )
+
+    # Forcer le temps objectif
+    use_forced_time = st.checkbox("Forcer un temps objectif ?", value=False)
+    objectif_temps_forced = None
+    if use_forced_time:
+        objectif_temps_forced = st.text_input("Temps objectif (h:mm:ss)", value="0:17:30")
+
+    # Bouton pour lancer la prédiction finale
+    if st.button("📊 Calculer prédiction finale"):
+        run_prediction(
+            distance_cible_km=distance_cible_km,
+            objectif_temps_forced=objectif_temps_forced,
+            show_map=True
+        )

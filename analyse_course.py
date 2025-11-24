@@ -402,4 +402,10 @@ if st.session_state.first_run_done and st.session_state.distance_gpx_km:
 
     use_forced_time = st.checkbox("Forcer un temps objectif ?", value=False)
     objectif_temps_forced = None
-    if use_forced
+    use_forced_time = st.checkbox("Forcer un temps objectif ?", value=False)
+objectif_temps_forced = None
+if use_forced_time:
+    objectif_temps_forced = st.text_input("Temps objectif (h:mm:ss)", value="0:17:30")
+
+if st.button("📊 Calculer prédiction finale"):
+    run_prediction(distance_cible_km=distance_cible_km, objectif_temps_forced=objectif_temps_forced, show_map=True)

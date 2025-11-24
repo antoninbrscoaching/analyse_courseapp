@@ -202,8 +202,15 @@ st.header("3️⃣ Paramètres modèle")
 
 c1, c2 = st.columns(2)
 with c1:
-    k_up = st.number_input("k_montée", value=1.001)
-    k_down = st.number_input("k_descente", value=0.999)
+    # Checkbox pour activer/désactiver les coefficients montée/descente
+    use_elev_coeff = st.checkbox("Activer coefficients montée/descente ?", value=True)
+    if use_elev_coeff:
+        k_up = st.number_input("Coefficient montée (k_up)", value=1.04)
+        k_down = st.number_input("Coefficient descente (k_down)", value=0.996)
+    else:
+        k_up = 1.0
+        k_down = 1.0
+
 with c2:
     k_temp_sup = st.number_input("k_temp_sup (>20°C)", value=1.002)
     k_temp_inf = st.number_input("k_temp_inf (<20°C)", value=0.998)
@@ -395,5 +402,4 @@ if st.session_state.first_run_done and st.session_state.distance_gpx_km:
 
     use_forced_time = st.checkbox("Forcer un temps objectif ?", value=False)
     objectif_temps_forced = None
-    if use_forced_time:
-        objectif_temps_forced = st.text_input("Temps objectif (h:mm:ss)", value="0:17:30")
+    if use_forced

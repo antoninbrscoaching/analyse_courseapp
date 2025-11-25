@@ -328,7 +328,20 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
         st.error("Fichier GPX invalide.")
         return
 
-    # center lat/lon for weather fetch
+    # --- FIGER LES VARIABLES UI EN LOCALES (évite les problèmes de portée) ---
+    use_elev = bool(globals().get("use_elev_coeff", False))
+    local_k_up = float(globals().get("k_up", 1.0))
+    local_k_down = float(globals().get("k_down", 1.0))
+
+    use_temp = bool(globals().get("use_temp_coeff", False))
+    local_k_temp_hot = float(globals().get("k_temp_hot", 0.0))
+    local_k_temp_cold = float(globals().get("k_temp_cold", 0.0))
+    local_opt_temp = float(globals().get("opt_temp", 12.0))
+
+    local_fatigue_active = bool(globals().get("fatigue_active", False))
+    local_fatigue_rate = float(globals().get("fatigue_rate", 0.0))
+
+    # centre du parcours pour météo
     center_lat = df_points["lat"].mean()
     center_lon = df_points["lon"].mean()
 
@@ -344,62 +357,17 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
     # Facteur pour adapter la distance cible (si distance forcée)
     facteur_dist = distance_cible_km / distance_gpx_km if distance_gpx_km > 0 else 1.0
     total_corr = total * facteur_dist
-    dists_corr = [d * facteur_dist for d in dists]
+    dists_corr = np.asarray([d * facteur_dist for d in dists])
 
-    # If we need historical temps for refs or for race day, determine date range to fetch
-    # We'll fetch from min(ref dates) to race day end
-    min_ref_date = None
-    max_ref_date = date_course
-    if use_hist_for_refs:
-        for r in refs:
-            rd = r.get("ref_datetime")
-            if rd:
-                donly = rd.date()
-                if min_ref_date is None or donly < min_ref_date:
-                    min_ref_date = donly
-                if donly > max_ref_date:
-                    max_ref_date = donly
-    # also include race date
-    # ensure min_ref_date at least today - 1
-    if min_ref_date is None:
-        min_ref_date = date_course
-    # fetch hourly temperatures covering [min_ref_date, max_ref_date]
-    hourly_temps_cache = fetch_historical_range(center_lat, center_lon, min_ref_date, max_ref_date)
+    # sécurité : elev_list en array et vérification longueur
+    elev_list = np.asarray([p.elevation or 0 for p in points])
+    if len(dists_corr) != len(elev_list) or len(dists_corr) < 2:
+        st.error("Impossible d'interpoler le profil — nombre de points insuffisant ou incohérent dans le GPX.")
+        return
 
-    # If we will need race-day temperatures to compute per-km temp, also ensure that date included
-    # (already included because max_ref_date >= date_course)
-
-    # --- Optionnel recalage des références en fonction de la météo historique (si demandé) ---
-    refs_used_for_fit = []
-    if use_hist_for_refs:
-        # for each reference, if ref_datetime exists, get temp at that datetime and apply temp model to adjust time
-        for r in refs:
-            r_copy = r.copy()
-            ref_dt = r.get("ref_datetime")
-            if ref_dt:
-                # convert ref_dt to UTC naive to match our hourly_temps keys (we treated keys as naive UTC)
-                # assume user inputs local time — we will treat them as local of the course; ideally you'd convert timezone.
-                # For simplicity we treat datetimes as naive UTC here.
-                temp_ref = get_temp_for_datetime(hourly_temps_cache, ref_dt)
-                # compute multiplier
-                if use_temp_coeff and temp_ref is not None:
-                    mult = temp_multiplier_nonlin(temp_ref, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold)
-                else:
-                    mult = 1.0
-                # adjust reference time: we consider temp multiplier acts multiplicatively on total time
-                t_raw = hms_to_seconds(r_copy["temps"])
-                t_adj = t_raw * mult
-                # store adjusted time as string back for fitting (we keep same format)
-                # convert seconds back to h:mm:ss
-                r_copy["temps"] = seconds_to_hms(t_adj)
-                r_copy["_temp_ref"] = temp_ref
-            refs_used_for_fit.append(r_copy)
-    else:
-        refs_used_for_fit = refs
-
-    # --- Modèle log-log ---
+    # --- Modèle log-log (on passe les coefficients locaux)
     try:
-        a, K = fit_loglog_model(refs_used_for_fit, k_up=(k_up if use_elev_coeff else 1.0), k_down=(k_down if use_elev_coeff else 1.0))
+        a, K = fit_loglog_model(refs, k_up=(local_k_up if use_elev else 1.0), k_down=(local_k_down if use_elev else 1.0))
     except ValueError as e:
         st.error(f"Problème lors de l’ajustement du modèle log-log : {e}")
         return
@@ -415,47 +383,62 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
     base_flat_total = predict_time_flat(distance_cible_m, a, K)
     base_s_per_km_flat = base_flat_total / distance_cible_km
 
-    # --- Prévision km par km ---
+    # Préparer km_marks
     km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
     if total_corr % 1000 != 0:
         km_marks.append(total_corr)
 
-    # Fetch hourly temps for race day range (we already fetched hourly_temps_cache including race date)
-    # We'll use center_lat/center_lon as representative location.
+    # ----- récup historique météo si nécessaire -----
+    min_ref_date = None
+    max_ref_date = date_course
+    if use_hist_for_refs:
+        for r in refs:
+            rd = r.get("ref_datetime")
+            if rd:
+                donly = rd.date()
+                if min_ref_date is None or donly < min_ref_date:
+                    min_ref_date = donly
+                if donly > max_ref_date:
+                    max_ref_date = donly
+    if min_ref_date is None:
+        min_ref_date = date_course
+
+    hourly_temps_cache = fetch_historical_range(center_lat, center_lon, min_ref_date, max_ref_date)
+
+    # --- Boucle km par km ---
     results = []
     cum_time = 0.0
-    elev_list = [p.elevation or 0 for p in points]
     dt_depart = datetime.combine(date_course, heure_course)
 
     for i, d in enumerate(km_marks):
-        # altitude interpolée
-        e_cur = np.interp(d, dists_corr, elev_list)
-        e_prev = np.interp(d - 1000, dists_corr, elev_list) if i > 0 else e_cur
+        # altitude interpolée (safe : dists_corr et elev_list sont des arrays)
+        e_cur = float(np.interp(d, dists_corr, elev_list))
+        e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
 
         d_up = max(0.0, e_cur - e_prev)
         d_down = max(0.0, e_prev - e_cur)
 
-        # Temps plat sur ce km (en secondes)
+        # Temps plat sur ce km
         t_km_flat = base_s_per_km_flat
 
-        # Appliquer effet élévation (gradient-based)
-        if use_elev_coeff:
-            t_km = apply_elevation_gradient_route(t_km_flat, d_up, d_down, segment_length_m=1000, k_up=k_up, k_down=k_down)
+        # Appliquer effet élévation (gradient-based) si activé
+        if use_elev:
+            t_km = apply_elevation_gradient_route(t_km_flat, d_up, d_down, segment_length_m=1000, k_up=local_k_up, k_down=local_k_down)
         else:
             t_km = t_km_flat
 
         # Fatigue linéaire
-        if fatigue_active and fatigue_rate > 0 and total_corr > 0:
+        if local_fatigue_active and local_fatigue_rate > 0 and total_corr > 0:
             progression = d / total_corr
-            t_km *= (1.0 + (fatigue_rate / 100.0) * progression)
+            t_km *= (1.0 + (local_fatigue_rate / 100.0) * progression)
 
-        # Météo : on veut la température au passage réel (milieu du segment)
+        # Météo : température au passage (milieu du segment)
         passage_dt = dt_depart + timedelta(seconds=cum_time + t_km / 2.0)
         temp_at_passage = get_temp_for_datetime(hourly_temps_cache, passage_dt)
 
         # Appliquer modèle température non-linéaire (si activé)
-        if use_temp_coeff and temp_at_passage is not None:
-            mult_temp = temp_multiplier_nonlin(temp_at_passage, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold)
+        if use_temp and temp_at_passage is not None:
+            mult_temp = temp_multiplier_nonlin(temp_at_passage, opt_temp=local_opt_temp, k_hot=local_k_temp_hot, k_cold=local_k_temp_cold)
             t_km *= mult_temp
         else:
             mult_temp = 1.0
@@ -474,13 +457,14 @@ def run_prediction(distance_cible_km, objectif_temps_forced=None, show_map=False
             "Temps cumulé": seconds_to_hms(cum_time),
         })
 
+    # résultats finaux (affichage inchangé)
     total_time_hms = seconds_to_hms(cum_time)
     st.success(f"⏱️ Temps total prévisionnel : {total_time_hms}")
 
     df_results = pd.DataFrame(results)
     st.subheader("📋 Détails km par km")
     st.dataframe(df_results, use_container_width=True)
-
+    
     # Afficher les références et leur éventuelle température historique si on a recalibré
     if use_hist_for_refs:
         st.subheader("🔁 Références recalibrées (température historique appliquée)")

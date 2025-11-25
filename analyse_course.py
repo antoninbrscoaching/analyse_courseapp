@@ -290,6 +290,38 @@ if use_hist_refs:
         refs[idx]["ref_datetime"] = datetime.combine(ref_date, ref_time)
 
 # ------------------------------------------------------
+# ⭐ APPLICATION DU COÛT DE DÉNIVELÉ POUR LA ROUTE
+#    Modèle NON LINÉAIRE basé sur le gradient réel (%)
+# ------------------------------------------------------
+def apply_elevation_gradient_route(time_flat_s, d_up_m, d_down_m, segment_length_m, k_up, k_down):
+    """
+    time_flat_s : temps (en sec) pour ce segment SI plat
+    d_up_m      : dénivelé positif sur le segment (m)
+    d_down_m    : dénivelé négatif sur le segment (m)
+    segment_length_m : longueur du segment (m)
+    k_up, k_down : coefficients de courbure pour montée/descente
+
+    Retourne : temps corrigé en secondes.
+    """
+
+    if segment_length_m <= 0:
+        return time_flat_s
+
+    # Gradient (%) = dénivelé / distance horizontale × 100
+    g_up = (d_up_m / segment_length_m) * 100.0
+    g_down = (d_down_m / segment_length_m) * 100.0
+
+    # --- Modèle non linéaire "en courbe" ---
+    # montée : coût exponentiel
+    uphill_factor = math.exp(k_up * g_up)
+
+    # descente : coût ou gain selon gradient
+    # NOTE : toujours <= 1 si k_down < 0
+    downhill_factor = math.exp(k_down * g_down)
+
+    return time_flat_s * uphill_factor * downhill_factor
+
+# ------------------------------------------------------
 # 💤 3bis. FATIGUE
 # ------------------------------------------------------
 st.header("3️⃣ bis. Fatigue linéaire")

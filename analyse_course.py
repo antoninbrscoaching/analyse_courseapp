@@ -32,7 +32,6 @@ def seconds_to_hms(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 def haversine_m(lat1, lon1, lat2, lon2):
-    # renvoie distance en mètres entre deux points WGS84
     R = 6371000.0
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -54,20 +53,13 @@ def gpx_to_df(points):
     return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0, "time": getattr(p, "time", None)} for p in points])
 
 def compute_total_and_cumdist(points):
-    """
-    Calcule deux totaux et courbes cumulées:
-      - total_by_3d: somme distance_3d fournie par gpxpy point.distance_3d (si disponible)
-      - total_by_hav: somme haversine horizontale (fallback)
-    Choisis la méthode la plus plausible (si écart >2% on privilégie haversine).
-    Retour: (chosen_total_m, dists_list_chosen_m, method_used, debug dict)
-    """
     if not points or len(points) < 2:
         return 0.0, [0.0], "none", {}
     total_3d = 0.0
     dists_3d = [0.0]
     for i in range(1, len(points)):
         try:
-            seg = points[i].distance_3d(points[i-1])  # en mètres
+            seg = points[i].distance_3d(points[i-1])
         except Exception:
             seg = 0.0
         total_3d += seg
@@ -83,7 +75,6 @@ def compute_total_and_cumdist(points):
         dists_hav.append(total_hav)
 
     debug = {"total_3d": total_3d, "total_hav": total_hav, "n_points": len(points)}
-    # si écart relatif > 2% on considère qu'il y a un souci avec 3d -> choisit haversine
     if total_3d <= 0 or abs(total_3d - total_hav) / max(total_hav, 1e-6) > 0.02:
         return total_hav, dists_hav, "haversine", debug
     else:
@@ -112,7 +103,7 @@ def parse_fit(file):
         return None
 
 # ------------------------------------------------------
-# météo historique (open-meteo archive)
+# météo historique
 # ------------------------------------------------------
 @st.cache_data(ttl=60*60)
 def fetch_open_meteo_hourly(lat, lon, start_date_str, end_date_str):
@@ -143,8 +134,6 @@ def get_temp_for_datetime(hourly_dict, target_dt):
     if not hourly_dict:
         return None
     keys = sorted(hourly_dict.keys())
-    if not keys:
-        return None
     if target_dt in hourly_dict:
         return hourly_dict[target_dt]
     lower = None
@@ -165,7 +154,7 @@ def get_temp_for_datetime(hourly_dict, target_dt):
     return float(v0 + (v1 - v0) * frac)
 
 # ------------------------------------------------------
-# Modèle log-log etc. (mêmes fonctions que précédemment)
+# Modèle log-log
 # ------------------------------------------------------
 def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
     xs, ys = [], []

@@ -1,4 +1,3 @@
-# (COLLER TOUT LE BLOC CI-DESSOUS DANS TON FICHIER)
 import streamlit as st
 import math
 import gpxpy
@@ -42,7 +41,6 @@ def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
     return f"{m}:{s:02d}"
 
 def haversine_m(lat1, lon1, lat2, lon2):
-    # renvoie distance en mètres entre deux points WGS84
     R = 6371000.0
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -51,7 +49,7 @@ def haversine_m(lat1, lon1, lat2, lon2):
     a = math.sin(dphi/2.0)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2.0)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# Classe minimale "point-like" pour TCX parsing (et fallback si besoin)
+# Classe minimale "point-like" pour TCX parsing
 class SimplePoint:
     def __init__(self, lat, lon, elev=0.0, time=None):
         self.latitude = float(lat)
@@ -60,25 +58,31 @@ class SimplePoint:
         self.time = time
 
     def distance_3d(self, other):
-        # calcule distance 3D entre deux SimplePoint (fallback si gpxpy point absent)
         horiz = haversine_m(self.latitude, self.longitude, other.latitude, other.longitude)
         vert = (self.elevation - other.elevation)
         return math.sqrt(horiz * horiz + vert * vert)
 
+# ---------------- Parsing GPX/FIT/TCX ----------------
 def parse_gpx_points(file):
-    gpx = gpxpy.parse(file)
-    points = []
-    for track in gpx.tracks:
-        for segment in track.segments:
-            for p in segment.points:
-                points.append(p)
-    return gpx, points
+    try:
+        file.seek(0)
+        gpx = gpxpy.parse(file)
+        points = []
+        for track in gpx.tracks:
+            for segment in track.segments:
+                for p in segment.points:
+                    points.append(p)
+        return gpx, points
+    except Exception as e:
+        st.error(f"Erreur lors du parsing GPX : {e}")
+        return None, []
 
 def gpx_to_df(points):
     return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0, "time": getattr(p, "time", None)} for p in points])
 
 def parse_fit(file):
     try:
+        file.seek(0)
         fit = FitFile(file)
         fit.parse()
         records = []
@@ -95,32 +99,20 @@ def parse_fit(file):
             return None
         dup = float(np.sum(np.diff(df["elev"]).clip(min=0)))
         ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0)))
-        # estime temps si possible (si fit contient timestamps on pourrait améliorer)
         return dict(distance=round(float(df["dist"].max())), D_up=round(dup), D_down=round(ddn))
     except Exception:
         return None
 
 def parse_tcx(file):
-    """
-    Parse TCX (bytes or file-like) and return points list (SimplePoint),
-    plus summary: total_m, D_up, D_down, duration_hms (if timepoints present)
-    """
     try:
+        file.seek(0)
         data = file.read()
         root = ET.fromstring(data)
     except Exception as e:
-        try:
-            # if it's file-like with .getvalue
-            data = file.getvalue()
-            root = ET.fromstring(data)
-        except Exception:
-            return None
+        return None
 
-    # find all Trackpoint elements (namespace-agnostic)
     trackpoints = root.findall('.//{*}Trackpoint')
-    pts = []
-    times = []
-    elevs = []
+    pts, times, elevs = [], [], []
     for tp in trackpoints:
         lat_elem = tp.find('.//{*}LatitudeDegrees')
         lon_elem = tp.find('.//{*}LongitudeDegrees')
@@ -130,7 +122,7 @@ def parse_tcx(file):
             continue
         lat = float(lat_elem.text)
         lon = float(lon_elem.text)
-        elev = float(alt_elem.text) if alt_elem is not None and alt_elem.text is not None else 0.0
+        elev = float(alt_elem.text) if alt_elem is not None and alt_elem.text else 0.0
         t = None
         if time_elem is not None and time_elem.text:
             try:
@@ -144,7 +136,6 @@ def parse_tcx(file):
     if not pts:
         return None
 
-    # compute distance & cumdists via haversine/3d method
     total = 0.0
     dists = [0.0]
     for i in range(1, len(pts)):
@@ -153,7 +144,6 @@ def parse_tcx(file):
 
     dup = float(np.sum(np.diff(elevs).clip(min=0))) if elevs else 0.0
     ddn = float(-np.sum(np.diff(elevs).clip(max=0))) if elevs else 0.0
-
     duration_hms = None
     if len(times) >= 2:
         dur = (times[-1] - times[0]).total_seconds()
@@ -174,24 +164,14 @@ def parse_tcx(file):
 @st.cache_data(ttl=60*60)
 def fetch_open_meteo_hourly(lat, lon, start_date_str, end_date_str):
     base = "https://archive-api.open-meteo.com/v1/archive"
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": start_date_str,
-        "end_date": end_date_str,
-        "hourly": "temperature_2m",
-        "timezone": "UTC"
-    }
+    params = {"latitude": lat, "longitude": lon, "start_date": start_date_str, "end_date": end_date_str, "hourly": "temperature_2m", "timezone": "UTC"}
     try:
         r = requests.get(base, params=params, timeout=15)
         r.raise_for_status()
         j = r.json()
         times = j.get("hourly", {}).get("time", [])
         temps = j.get("hourly", {}).get("temperature_2m", [])
-        out = {}
-        for t, temp in zip(times, temps):
-            dt = datetime.fromisoformat(t)
-            out[dt] = float(temp)
+        out = {datetime.fromisoformat(t): float(temp) for t, temp in zip(times, temps)}
         return out
     except Exception:
         return {}
@@ -204,8 +184,7 @@ def get_temp_for_datetime(hourly_dict, target_dt):
         return None
     if target_dt in hourly_dict:
         return hourly_dict[target_dt]
-    lower = None
-    upper = None
+    lower, upper = None, None
     for k in keys:
         if k <= target_dt:
             lower = k
@@ -216,8 +195,8 @@ def get_temp_for_datetime(hourly_dict, target_dt):
         return hourly_dict[keys[0]]
     if upper is None:
         return hourly_dict[keys[-1]]
-    t0 = lower; t1 = upper
-    v0 = hourly_dict[t0]; v1 = hourly_dict[t1]
+    t0, t1 = lower, upper
+    v0, v1 = hourly_dict[t0], hourly_dict[t1]
     frac = (target_dt - t0).total_seconds() / (t1 - t0).total_seconds()
     return float(v0 + (v1 - v0) * frac)
 
@@ -242,7 +221,7 @@ def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
     n = len(xs)
     if n < 2:
         raise ValueError("Il faut deux références minimum valides.")
-    sum_x = sum(xs); sum_y = sum(ys)
+    sum_x, sum_y = sum(xs), sum(ys)
     sum_xx = sum(x*x for x in xs)
     sum_xy = sum(x*y for x, y in zip(xs, ys))
     denom = n * sum_xx - sum_x**2
@@ -281,14 +260,8 @@ def apply_elevation_gradient_route(time_flat_s, d_up_m, d_down_m, segment_length
     downhill_factor = math.exp(delta_down * g_down)
     return float(time_flat_s * uphill_factor * downhill_factor)
 
-# ------------------------------------------------------
-# Calcul distance cumulée robuste + fallback 3D/haversine
-# ------------------------------------------------------
+# ---------------- Calcul distance cumulée ----------------
 def compute_total_and_cumdist(points):
-    """
-    Retourne: (chosen_total_m, cumdist_list_m, method_used, debug)
-    Choisit entre distance_3d fournie (si points ont méthode) et haversine.
-    """
     if not points or len(points) < 2:
         return 0.0, [0.0], "none", {}
 
@@ -312,7 +285,6 @@ def compute_total_and_cumdist(points):
         dists_hav.append(total_hav)
 
     debug = {"total_3d": total_3d, "total_hav": total_hav, "n_points": len(points)}
-    # si écart relatif > 2% on considère qu'il y a un souci avec 3d -> choisit haversine
     if total_3d <= 0 or abs(total_3d - total_hav) / max(total_hav, 1e-6) > 0.02:
         return total_hav, dists_hav, "haversine", debug
     else:

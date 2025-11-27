@@ -314,7 +314,9 @@ def run_prediction_df(distance_cible_km,
                       local_fatigue_rate=0.0):
     """
     Calcule et renvoie DataFrame km-par-km et temps total.
-    Ne fait PAS d'affichage Streamlit — permet d'avoir base_df et forced_df distincts.
+    Si objective_time_hms est fourni : on recherche par binary search le flat_s_per_km
+    qui, appliqué aux segments (élévation/temp/fatigue), donne le temps total demandé.
+    Retourne dict with df, total_seconds, total_human, distance_gpx_km, method_used, debug, base_flat_total, a, K, avg_pace_s_per_km
     """
     # points must be non-empty
     if not points or len(points) < 2:
@@ -379,25 +381,109 @@ def run_prediction_df(distance_cible_km,
     else:
         refs_for_fit = [r.copy() for r in refs_input]
 
-    # Fit log-log
+    # Fit log-log (pour info / base)
     a, K = fit_loglog_model(refs_for_fit, k_up=(local_k_up if apply_elev else 1.0), k_down=(local_k_down if apply_elev else 1.0))
 
-    # override with objective if provided
-    if objective_time_hms:
-        a = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
-
+    # compute base flat total from model (before any objective override)
     distance_cible_m = int(distance_cible_km * 1000)
-    base_flat_total = predict_time_flat(distance_cible_m, a, K)
-    base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
+    base_flat_total_model = predict_time_flat(distance_cible_m, a, K)
+    base_s_per_km_model = base_flat_total_model / distance_cible_km if distance_cible_km > 0 else base_flat_total_model
 
     # km marks
     km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
     if (total_corr % 1000) != 0:
         km_marks.append(total_corr)
 
+    # helper: compute total time for a given flat seconds-per-km (used by binary search)
+    def total_for_flat(flat_s_per_km):
+        cum = 0.0
+        cum_local = 0.0  # local cum for passage time
+        for i, d in enumerate(km_marks):
+            # elevation for the segment (approx between d-1000 and d)
+            e_cur = float(np.interp(d, dists_corr, elev_list))
+            e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
+            d_up = max(0.0, e_cur - e_prev)
+            d_down = max(0.0, e_prev - e_cur)
+
+            t_km = flat_s_per_km
+
+            if apply_elev:
+                t_km = apply_elevation_gradient_route(t_km, d_up, d_down, segment_length_m=1000.0, k_up=local_k_up, k_down=local_k_down)
+
+            if apply_fatigue and local_fatigue_rate > 0 and total_corr > 0:
+                progression = d / total_corr
+                t_km *= (1.0 + (local_fatigue_rate / 100.0) * progression)
+
+            # passage_dt uses cum_local
+            passage_dt = datetime.combine(date_course_local, heure_course_local) + timedelta(seconds=cum_local + t_km / 2.0)
+            temp_at_passage = get_temp_for_datetime(hourly_temps_cache, passage_dt)
+
+            if apply_temp and temp_at_passage is not None:
+                mult_temp = temp_multiplier_nonlin(temp_at_passage, opt_temp=local_opt_temp, k_hot=local_k_temp_hot, k_cold=local_k_temp_cold)
+                t_km *= mult_temp
+
+            cum += t_km
+            cum_local += t_km
+        return cum
+
+    # If objective_time_hms is provided: find flat_s_per_km so that final total ~ objective
+    forced_flat_s_per_km = None
+    forced_used = False
+    if objective_time_hms:
+        target_total_s = hms_to_seconds(objective_time_hms)
+        if target_total_s <= 0:
+            raise ValueError("Temps objectif invalide.")
+        # We'll search for flat_s_per_km in a reasonable interval.
+        # Lower bound: small positive (0.5 s/km), upper bound: try a high value.
+        low = 0.5
+        # initial high: take model flat per km scaled to be safe
+        high = max(base_s_per_km_model * 4.0, target_total_s * 2.0 / max(distance_cible_km, 1e-6))
+        # ensure that total_for_flat(high) >= target_total_s
+        t_high = total_for_flat(high)
+        # expand high if necessary
+        expand_iter = 0
+        while t_high < target_total_s and expand_iter < 40:
+            high *= 2.0
+            t_high = total_for_flat(high)
+            expand_iter += 1
+
+        # now check feasibility: minimal achievable (very small flat)
+        min_possible = total_for_flat(low)
+        if target_total_s < min_possible * 0.98:
+            # impossible to reach such a fast target given elevation/temp/fatigue.
+            st.warning(f"⚠️ L'objectif {objective_time_hms} semble irréaliste compte tenu du profil/météo. Temps minimal atteignable approximatif: {seconds_to_hms(min_possible)}. Le meilleur compromis sera rendu.")
+            forced_flat_s_per_km = low
+            forced_used = True
+        else:
+            # binary search to find flat_s_per_km giving target_total_s within tol
+            tol_seconds = 0.5  # tolerance on total seconds
+            it = 0
+            while it < 60:
+                mid = 0.5 * (low + high)
+                t_mid = total_for_flat(mid)
+                if abs(t_mid - target_total_s) <= tol_seconds:
+                    forced_flat_s_per_km = mid
+                    forced_used = True
+                    break
+                if t_mid > target_total_s:
+                    high = mid
+                else:
+                    low = mid
+                it += 1
+            if not forced_used:
+                forced_flat_s_per_km = mid
+                forced_used = True
+
+    # If objective not provided: use model flat per km
+    if not objective_time_hms:
+        flat_s_per_km_to_use = base_s_per_km_model
+    else:
+        flat_s_per_km_to_use = forced_flat_s_per_km
+
+    # Now build final per-km table using flat_s_per_km_to_use
     results = []
     cum_time = 0.0
-    dt_depart = datetime.combine(date_course_local, heure_course)
+    dt_depart = datetime.combine(date_course_local, heure_course_local)
 
     for i, d in enumerate(km_marks):
         e_cur = float(np.interp(d, dists_corr, elev_list))
@@ -405,7 +491,7 @@ def run_prediction_df(distance_cible_km,
         d_up = max(0.0, e_cur - e_prev)
         d_down = max(0.0, e_prev - e_cur)
 
-        t_km = base_s_per_km_flat
+        t_km = flat_s_per_km_to_use
 
         if apply_elev:
             t_km = apply_elevation_gradient_route(t_km, d_up, d_down, segment_length_m=1000.0, k_up=local_k_up, k_down=local_k_down)
@@ -437,6 +523,8 @@ def run_prediction_df(distance_cible_km,
         })
 
     df = pd.DataFrame(results)
+    avg_pace_s_per_km = cum_time / distance_cible_km if distance_cible_km > 0 else float('nan')
+
     return {
         "df": df,
         "total_seconds": cum_time,
@@ -444,8 +532,11 @@ def run_prediction_df(distance_cible_km,
         "distance_gpx_km": distance_gpx_km,
         "method_used": method_used,
         "debug": debug,
-        "base_flat_total": base_flat_total,
-        "a": a, "K": K
+        "base_flat_total": base_flat_total_model,
+        "a": a, "K": K,
+        "avg_pace_s_per_km": avg_pace_s_per_km,
+        "forced_flat_s_per_km": (flat_s_per_km_to_use if objective_time_hms else None),
+        "objective_requested": objective_time_hms
     }
 
 # ----------------- Interactions : bouton base et forcé (affichage côte-à-côte) -----------------
@@ -528,6 +619,8 @@ if "res_base" in st.session_state or "res_forced" in st.session_state:
         if base:
             st.write(f"Distance GPX détectée: {base['distance_gpx_km']:.3f} km (méthode: {base['method_used']})")
             st.write(f"Temps total (base): {base['total_human']}")
+            pace_base = base['avg_pace_s_per_km']
+            st.write(f"Allure moyenne (base): {int(pace_base//60)}:{int(pace_base%60):02d} min/km" if not math.isnan(pace_base) else "—")
             st.dataframe(base["df"], use_container_width=True)
         else:
             st.info("Clique sur 'Calculer prédiction (BASE)' pour générer ce tableau.")
@@ -535,8 +628,16 @@ if "res_base" in st.session_state or "res_forced" in st.session_state:
     with right:
         st.subheader("🎯 Forcé (distance/temps forcés)")
         if forced:
-            st.write(f"Distance cible: {distance_forced_km if force_distance_checkbox else round(forced['distance_gpx_km'],3)} km")
+            dist_display = distance_forced_km if force_distance_checkbox else round(forced['distance_gpx_km'],3)
+            st.write(f"Distance cible: {dist_display} km")
             st.write(f"Temps total (forcé): {forced['total_human']}")
+            pace_forced = forced['avg_pace_s_per_km']
+            if not math.isnan(pace_forced):
+                st.write(f"Allure moyenne (forcé): {int(pace_forced//60)}:{int(pace_forced%60):02d} min/km")
+            # if there was a forced flat used, show it
+            if forced.get("forced_flat_s_per_km"):
+                sf = forced["forced_flat_s_per_km"]
+                st.caption(f"Flat (plat) par km utilisé pour forcer : {seconds_to_hms(sf)} (hh:mm:ss per km) -> {int(sf//60)}:{int(sf%60):02d} min/km")
             st.dataframe(forced["df"], use_container_width=True)
         else:
             st.info("Clique sur 'Calculer prédiction finale (FORCÉ)' pour générer ce tableau.")

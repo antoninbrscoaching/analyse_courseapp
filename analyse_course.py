@@ -1,3 +1,4 @@
+# (COLLER TOUT LE BLOC CI-DESSOUS DANS TON FICHIER)
 import streamlit as st
 import math
 import gpxpy
@@ -8,12 +9,14 @@ import pandas as pd
 import numpy as np
 import pydeck as pdk
 import matplotlib.pyplot as plt
+import xml.etree.ElementTree as ET
+from io import BytesIO
 
 # ------------------------------------------------------
 # ⚙️ CONFIGURATION
 # ------------------------------------------------------
 st.set_page_config(page_title="Prédiction course route", layout="wide")
-st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + Météo + Fatigue linéaire) — Route")
+st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + TCX + Météo + Fatigue linéaire) — Route")
 
 # ------------------------------------------------------
 # 🧩 UTILITAIRES GÉNÉRAUX
@@ -31,7 +34,15 @@ def seconds_to_hms(seconds: float) -> str:
     s = int(seconds % 60)
     return f"{h}:{m:02d}:{s:02d}"
 
+def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
+    if seconds_per_km <= 0 or math.isnan(seconds_per_km) or math.isinf(seconds_per_km):
+        return "0:00"
+    m = int(seconds_per_km // 60)
+    s = int(round(seconds_per_km % 60))
+    return f"{m}:{s:02d}"
+
 def haversine_m(lat1, lon1, lat2, lon2):
+    # renvoie distance en mètres entre deux points WGS84
     R = 6371000.0
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -39,6 +50,20 @@ def haversine_m(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi/2.0)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2.0)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+# Classe minimale "point-like" pour TCX parsing (et fallback si besoin)
+class SimplePoint:
+    def __init__(self, lat, lon, elev=0.0, time=None):
+        self.latitude = float(lat)
+        self.longitude = float(lon)
+        self.elevation = float(elev) if elev is not None else 0.0
+        self.time = time
+
+    def distance_3d(self, other):
+        # calcule distance 3D entre deux SimplePoint (fallback si gpxpy point absent)
+        horiz = haversine_m(self.latitude, self.longitude, other.latitude, other.longitude)
+        vert = (self.elevation - other.elevation)
+        return math.sqrt(horiz * horiz + vert * vert)
 
 def parse_gpx_points(file):
     gpx = gpxpy.parse(file)
@@ -51,34 +76,6 @@ def parse_gpx_points(file):
 
 def gpx_to_df(points):
     return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0, "time": getattr(p, "time", None)} for p in points])
-
-def compute_total_and_cumdist(points):
-    if not points or len(points) < 2:
-        return 0.0, [0.0], "none", {}
-    total_3d = 0.0
-    dists_3d = [0.0]
-    for i in range(1, len(points)):
-        try:
-            seg = points[i].distance_3d(points[i-1])
-        except Exception:
-            seg = 0.0
-        total_3d += seg
-        dists_3d.append(total_3d)
-
-    total_hav = 0.0
-    dists_hav = [0.0]
-    for i in range(1, len(points)):
-        lat1, lon1 = points[i-1].latitude, points[i-1].longitude
-        lat2, lon2 = points[i].latitude, points[i].longitude
-        seg = haversine_m(lat1, lon1, lat2, lon2)
-        total_hav += seg
-        dists_hav.append(total_hav)
-
-    debug = {"total_3d": total_3d, "total_hav": total_hav, "n_points": len(points)}
-    if total_3d <= 0 or abs(total_3d - total_hav) / max(total_hav, 1e-6) > 0.02:
-        return total_hav, dists_hav, "haversine", debug
-    else:
-        return total_3d, dists_3d, "3d", debug
 
 def parse_fit(file):
     try:
@@ -98,12 +95,81 @@ def parse_fit(file):
             return None
         dup = float(np.sum(np.diff(df["elev"]).clip(min=0)))
         ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0)))
+        # estime temps si possible (si fit contient timestamps on pourrait améliorer)
         return dict(distance=round(float(df["dist"].max())), D_up=round(dup), D_down=round(ddn))
     except Exception:
         return None
 
+def parse_tcx(file):
+    """
+    Parse TCX (bytes or file-like) and return points list (SimplePoint),
+    plus summary: total_m, D_up, D_down, duration_hms (if timepoints present)
+    """
+    try:
+        data = file.read()
+        root = ET.fromstring(data)
+    except Exception as e:
+        try:
+            # if it's file-like with .getvalue
+            data = file.getvalue()
+            root = ET.fromstring(data)
+        except Exception:
+            return None
+
+    # find all Trackpoint elements (namespace-agnostic)
+    trackpoints = root.findall('.//{*}Trackpoint')
+    pts = []
+    times = []
+    elevs = []
+    for tp in trackpoints:
+        lat_elem = tp.find('.//{*}LatitudeDegrees')
+        lon_elem = tp.find('.//{*}LongitudeDegrees')
+        alt_elem = tp.find('.//{*}AltitudeMeters')
+        time_elem = tp.find('.//{*}Time')
+        if lat_elem is None or lon_elem is None:
+            continue
+        lat = float(lat_elem.text)
+        lon = float(lon_elem.text)
+        elev = float(alt_elem.text) if alt_elem is not None and alt_elem.text is not None else 0.0
+        t = None
+        if time_elem is not None and time_elem.text:
+            try:
+                t = datetime.fromisoformat(time_elem.text.replace('Z', '+00:00')).replace(tzinfo=None)
+                times.append(t)
+            except Exception:
+                t = None
+        elevs.append(elev)
+        pts.append(SimplePoint(lat, lon, elev, t))
+
+    if not pts:
+        return None
+
+    # compute distance & cumdists via haversine/3d method
+    total = 0.0
+    dists = [0.0]
+    for i in range(1, len(pts)):
+        total += pts[i].distance_3d(pts[i-1])
+        dists.append(total)
+
+    dup = float(np.sum(np.diff(elevs).clip(min=0))) if elevs else 0.0
+    ddn = float(-np.sum(np.diff(elevs).clip(max=0))) if elevs else 0.0
+
+    duration_hms = None
+    if len(times) >= 2:
+        dur = (times[-1] - times[0]).total_seconds()
+        if dur > 0:
+            duration_hms = seconds_to_hms(dur)
+
+    return {
+        "points": pts,
+        "distance": round(total),
+        "D_up": round(dup),
+        "D_down": round(ddn),
+        "duration_hms": duration_hms
+    }
+
 # ------------------------------------------------------
-# météo historique
+# météo historique (open-meteo archive)
 # ------------------------------------------------------
 @st.cache_data(ttl=60*60)
 def fetch_open_meteo_hourly(lat, lon, start_date_str, end_date_str):
@@ -134,6 +200,8 @@ def get_temp_for_datetime(hourly_dict, target_dt):
     if not hourly_dict:
         return None
     keys = sorted(hourly_dict.keys())
+    if not keys:
+        return None
     if target_dt in hourly_dict:
         return hourly_dict[target_dt]
     lower = None
@@ -154,7 +222,7 @@ def get_temp_for_datetime(hourly_dict, target_dt):
     return float(v0 + (v1 - v0) * frac)
 
 # ------------------------------------------------------
-# Modèle log-log
+# Modèle log-log & utilitaires
 # ------------------------------------------------------
 def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
     xs, ys = [], []
@@ -207,18 +275,62 @@ def apply_elevation_gradient_route(time_flat_s, d_up_m, d_down_m, segment_length
         return time_flat_s
     g_up = (d_up_m / segment_length_m) * 100.0
     g_down = (d_down_m / segment_length_m) * 100.0
-    # on considère delta par rapport à 1.0 (facteur multiplicatif)
     delta_up = float(k_up) - 1.0
     delta_down = float(k_down) - 1.0
     uphill_factor = math.exp(delta_up * g_up)
     downhill_factor = math.exp(delta_down * g_down)
     return float(time_flat_s * uphill_factor * downhill_factor)
 
-# ---------------- UI & Inputs (conservés et ajustés) ----------------
+# ------------------------------------------------------
+# Calcul distance cumulée robuste + fallback 3D/haversine
+# ------------------------------------------------------
+def compute_total_and_cumdist(points):
+    """
+    Retourne: (chosen_total_m, cumdist_list_m, method_used, debug)
+    Choisit entre distance_3d fournie (si points ont méthode) et haversine.
+    """
+    if not points or len(points) < 2:
+        return 0.0, [0.0], "none", {}
+
+    total_3d = 0.0
+    dists_3d = [0.0]
+    for i in range(1, len(points)):
+        try:
+            seg = points[i].distance_3d(points[i-1])
+        except Exception:
+            seg = 0.0
+        total_3d += seg
+        dists_3d.append(total_3d)
+
+    total_hav = 0.0
+    dists_hav = [0.0]
+    for i in range(1, len(points)):
+        lat1, lon1 = points[i-1].latitude, points[i-1].longitude
+        lat2, lon2 = points[i].latitude, points[i].longitude
+        seg = haversine_m(lat1, lon1, lat2, lon2)
+        total_hav += seg
+        dists_hav.append(total_hav)
+
+    debug = {"total_3d": total_3d, "total_hav": total_hav, "n_points": len(points)}
+    # si écart relatif > 2% on considère qu'il y a un souci avec 3d -> choisit haversine
+    if total_3d <= 0 or abs(total_3d - total_hav) / max(total_hav, 1e-6) > 0.02:
+        return total_hav, dists_hav, "haversine", debug
+    else:
+        return total_3d, dists_3d, "3d", debug
+
+# ---------------- UI & Inputs ----------------
 st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
+# if a GPX is uploaded, parse immediately to store original distance
+if gpx_file:
+    try:
+        gpx_tmp, pts_tmp = parse_gpx_points(gpx_file)
+        total_m_tmp, _, method_tmp, debug_tmp = compute_total_and_cumdist(pts_tmp)
+        st.session_state["gpx_original_distance_km"] = total_m_tmp / 1000.0
+    except Exception:
+        st.session_state["gpx_original_distance_km"] = None
 
-st.header("2️⃣ Courses de référence (manuel ou FIT)")
+st.header("2️⃣ Courses de référence (manuel ou FIT/TCX)")
 if "n_refs" not in st.session_state:
     st.session_state.n_refs = 3
 cols = st.columns([1,1])
@@ -234,7 +346,7 @@ for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
-        use_fit = st.checkbox(f"FIT ?", key=f"use_fit_{i}")
+        use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
     with c2:
         dist = st.number_input(f"Dist {i} (m)", value=5000 * i, key=f"dist_{i}")
     with c3:
@@ -244,12 +356,48 @@ for i in range(1, st.session_state.n_refs + 1):
     with c5:
         ddn = st.number_input(f"D- {i}", value=0.0, key=f"ddn_{i}")
     with c6:
-        file_fit = st.file_uploader(f"FIT {i}", type=["fit"], key=f"fit_{i}") if use_fit else None
-        if file_fit:
-            data_fit = parse_fit(file_fit)
-            if data_fit:
-                dist, dup, ddn = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
-                st.info(f"✔ FIT détecté : {dist}m | D+{dup} | D-{ddn}")
+        file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
+        if file_in:
+            # detect extension by name if exists, otherwise attempt parse fit then tcx
+            name = getattr(file_in, "name", "") or ""
+            if name.lower().endswith(".fit"):
+                data_fit = parse_fit(file_in)
+                if data_fit:
+                    dist, dup, ddn = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
+                    st.info(f"✔ FIT détecté : {dist}m | D+{dup} | D-{ddn}")
+                else:
+                    st.warning("Fichier FIT non exploitable.")
+            elif name.lower().endswith(".tcx"):
+                # parse tcx to extract distance and elevation/duration
+                tcx_res = parse_tcx(file_in)
+                if tcx_res:
+                    dist = int(round(tcx_res["distance"]))
+                    dup = int(round(tcx_res["D_up"]))
+                    ddn = int(round(tcx_res["D_down"]))
+                    if tcx_res.get("duration_hms"):
+                        temps = tcx_res["duration_hms"]
+                    st.info(f"✔ TCX détecté : {dist}m | D+{dup} | D-{ddn} | dur: {temps}")
+                else:
+                    st.warning("Fichier TCX non exploitable.")
+            else:
+                # try both
+                file_in.seek(0)
+                data_fit = parse_fit(file_in)
+                if data_fit:
+                    dist, dup, ddn = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
+                    st.info(f"✔ FIT détecté : {dist}m | D+{dup} | D-{ddn}")
+                else:
+                    file_in.seek(0)
+                    tcx_res = parse_tcx(file_in)
+                    if tcx_res:
+                        dist = int(round(tcx_res["distance"]))
+                        dup = int(round(tcx_res["D_up"]))
+                        ddn = int(round(tcx_res["D_down"]))
+                        if tcx_res.get("duration_hms"):
+                            temps = tcx_res["duration_hms"]
+                        st.info(f"✔ TCX détecté : {dist}m | D+{dup} | D-{ddn} | dur: {temps}")
+                    else:
+                        st.warning("Fichier non exploitable.")
     refs.append(dict(distance=dist, temps=temps, D_up=dup, D_down=ddn))
 
 st.header("3️⃣ Paramètres modèle")
@@ -295,11 +443,12 @@ fatigue_rate = 0.0
 if fatigue_active:
     fatigue_rate = st.slider("Régression finale (%)", 0.0, 30.0, 5.0, 0.5)
 
-# ---------------- run_prediction (retourne df + total) ----------------
+# ---------------- helper to fetch historic temps (cached) ----------------
 @st.cache_data(ttl=60)
 def fetch_historical_range(lat, lon, start_date, end_date):
     return fetch_open_meteo_hourly(lat, lon, start_date.isoformat(), end_date.isoformat())
 
+# ---------------- run_prediction_df (retourne df + meta) ----------------
 def run_prediction_df(distance_cible_km,
                       refs_input,
                       points,
@@ -314,10 +463,10 @@ def run_prediction_df(distance_cible_km,
                       local_k_temp_hot=0.002, local_k_temp_cold=0.002, local_opt_temp=12.0,
                       local_fatigue_rate=0.0):
     """
-    Calcule et renvoie DataFrame km-par-km et temps total.
-    Ne fait PAS d'affichage Streamlit — permet d'avoir base_df et forced_df distincts.
+    Calcule et renvoie DataFrame km-par-km et métadonnées.
+    Si objective_time_hms est fourni, on applique d'abord les effets par segment
+    puis on SCALE pour que la somme des segments = temps objectif (donc total forcé exact).
     """
-    # points must be non-empty
     if not points or len(points) < 2:
         raise ValueError("GPX invalide ou trop court.")
 
@@ -329,13 +478,13 @@ def run_prediction_df(distance_cible_km,
     if not distance_cible_km or distance_cible_km <= 0:
         distance_cible_km = distance_gpx_km
 
-    # facteur pour redimensionner la courbe cumulée si on force une autre distance
     facteur_dist = distance_cible_km / max(distance_gpx_km, 1e-6)
     total_corr = total_m * facteur_dist
     dists_corr = np.asarray([d * facteur_dist for d in dists])
 
     elev_list = np.asarray([p.elevation or 0 for p in points])
     if len(dists_corr) != len(elev_list):
+        # resample elev_list to len(dists_corr) via simple interp
         xs = np.linspace(0, total_m, len(elev_list))
         new_x = np.linspace(0, total_m, len(dists_corr))
         elev_list = np.interp(new_x, xs, elev_list)
@@ -355,13 +504,13 @@ def run_prediction_df(distance_cible_km,
                     max_ref_date = d
     if min_ref_date is None:
         min_ref_date = date_course_local
-    hourly_temps_cache = {}
+
     try:
         hourly_temps_cache = fetch_historical_range(center_lat, center_lon, min_ref_date, max_ref_date)
     except Exception:
         hourly_temps_cache = {}
 
-    # recalibrage références si demandé (neutralise l'effet de la température historique sur les temps de réf)
+    # recalibration météo pour refs si demandé
     refs_for_fit = []
     if use_hist_for_refs_local and hourly_temps_cache:
         for r in refs_input:
@@ -379,147 +528,111 @@ def run_prediction_df(distance_cible_km,
     else:
         refs_for_fit = [r.copy() for r in refs_input]
 
-    # Fit log-log (a, K)
+    # Fit log-log
     a, K = fit_loglog_model(refs_for_fit, k_up=(local_k_up if apply_elev else 1.0), k_down=(local_k_down if apply_elev else 1.0))
 
-    # Si on a un objectif global de temps, on n'applique PAS encore la correction segment par segment :
-    # on construira les multiplicateurs par segment puis on calculera la constante de normalisation s
+    # If objective_time_hms provided we still compute 'a' from objective to get target flat pace (but we'll scale segments afterwards)
+    if objective_time_hms:
+        try:
+            a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
+        except Exception as e:
+            raise
+
     distance_cible_m = int(distance_cible_km * 1000)
-    # base plat total (d'après a,K) — utile pour affichage comparatif
-    base_flat_total = predict_time_flat(distance_cible_m, a, K)
+    base_flat_total = predict_time_flat(distance_cible_m, (a_override if objective_time_hms else a), K)
+    base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
 
-    # Construire la liste des segments (en mètres) en conservant le dernier segment partial
-    full_km_count = int(total_corr // 1000)
-    segs = [1000.0] * full_km_count
-    remainder = total_corr - full_km_count * 1000.0
-    if remainder > 0.5:  # si > 0.5 m on garde le dernier segment (précision)
-        segs.append(remainder)
+    # km marks (entiers) + dernier segment fractionnaire si besoin
+    km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
+    last_seg = total_corr - (int(total_corr // 1000) * 1000)
+    if last_seg > 1e-6:
+        km_marks.append(total_corr)
 
-    # Si total_corr < 1000 (parcours < 1 km) on s'assure d'avoir un seul segment égal à total_corr
-    if total_corr < 1000.0:
-        segs = [total_corr]
-
-    # on va itérer sur segments en utilisant l'interpolation sur dists_corr/elev_list
-    results = []
-    cum_time = 0.0
+    # PRE-CALC: créer la liste des segments et leurs t_km pré-ajustés (avant éventuelle mise à l'échelle objective)
+    segment_infos = []
+    cum_time_temp = 0.0
     dt_depart = datetime.combine(date_course_local, heure_course_local)
+    for i, d in enumerate(km_marks):
+        e_cur = float(np.interp(d, dists_corr, elev_list))
+        e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
+        d_up = max(0.0, e_cur - e_prev)
+        d_down = max(0.0, e_prev - e_cur)
 
-    # première passe : calculer multiplicateurs par segment (sans base s)
-    seg_infos = []  # list of dicts {seg_len_m, seg_len_km, d_up, d_down, temp_at_passage, mult_elev, mult_temp, mult_fatigue, combined_mult}
-    cum_dist_m = 0.0
-    for seg_len_m in segs:
-        seg_start = cum_dist_m
-        seg_end = cum_dist_m + seg_len_m
-        # interpolation de l'altitude au début et à la fin
-        e_start = float(np.interp(seg_start, dists_corr, elev_list))
-        e_end = float(np.interp(seg_end, dists_corr, elev_list))
-        d_up = max(0.0, e_end - e_start)
-        d_down = max(0.0, e_start - e_end)
+        # temps plat sur ce segment (base flat per km) - if last seg is shorter, scale by length
+        seg_length_m = 1000.0 if (i < len(km_marks) - 1 or last_seg < 1e-6) else (d - km_marks[-2] if len(km_marks) >= 2 else d)
+        # If the segment is fractional, base_s_per_km_flat must be scaled to segment length:
+        t_km_flat = base_s_per_km_flat * (seg_length_m / 1000.0)
 
-        # position temporelle pour récupérer la température approximative — ici on prendra le milieu de l'effort estimé
-        # pour la passe de calcul des multiplicateurs, on suppose un temps moyen initial par km = base_flat_total/distance_cible_km (ou 1s si 0)
-        # mais pour la normalisation finale on n'en a pas besoin ; pour récupérer la température on peut approximer avec départ + progression linéaire
-        approx_progress = (seg_start + seg_len_m / 2.0) / max(total_corr, 1.0)
-        approx_seconds_progress = approx_progress * (base_flat_total if base_flat_total > 0 else 1.0)
-        passage_dt = dt_depart + timedelta(seconds=approx_seconds_progress)
+        # apply elevation
+        t_km_after_elev = apply_elevation_gradient_route(t_km_flat, d_up, d_down, segment_length_m=seg_length_m, k_up=local_k_up, k_down=local_k_down) if apply_elev else t_km_flat
 
-        temp_at_passage = get_temp_for_datetime(hourly_temps_cache, passage_dt) if hourly_temps_cache else None
-
-        # multipliers indépendants de la base
-        # elev multiplier: apply_elevation_gradient_route(1.0,... ) returns factor relative to flat
-        mult_elev = apply_elevation_gradient_route(1.0, d_up_m=d_up, d_down_m=d_down, segment_length_m=seg_len_m, k_up=local_k_up, k_down=local_k_down) if apply_elev else 1.0
-        # temp multiplier
-        mult_temp = temp_multiplier_nonlin(temp_at_passage, opt_temp=local_opt_temp, k_hot=local_k_temp_hot, k_cold=local_k_temp_cold) if (apply_temp and temp_at_passage is not None) else 1.0
-        # fatigue multiplier (progression moyenne du segment -> on prendra la progression au centre du segment)
-        mult_fatigue = 1.0
+        # apply fatigue (progression uses d / total_corr)
         if apply_fatigue and local_fatigue_rate > 0 and total_corr > 0:
-            progression = (seg_start + seg_len_m / 2.0) / total_corr
-            mult_fatigue = (1.0 + (local_fatigue_rate / 100.0) * progression)
+            progression = d / total_corr
+            t_km_after_fatigue = t_km_after_elev * (1.0 + (local_fatigue_rate / 100.0) * progression)
+        else:
+            t_km_after_fatigue = t_km_after_elev
 
-        combined_mult = mult_elev * mult_temp * mult_fatigue
+        # temperature at passage (mid-segment time using cum_time_temp)
+        passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_km_after_fatigue / 2.0)
+        temp_at_passage = get_temp_for_datetime(hourly_temps_cache, passage_dt)
+        if apply_temp and temp_at_passage is not None:
+            mult_temp = temp_multiplier_nonlin(temp_at_passage, opt_temp=local_opt_temp, k_hot=local_k_temp_hot, k_cold=local_k_temp_cold)
+            t_km_after_temp = t_km_after_fatigue * mult_temp
+        else:
+            mult_temp = 1.0
+            t_km_after_temp = t_km_after_fatigue
 
-        seg_infos.append({
-            "seg_len_m": seg_len_m,
-            "seg_len_km": seg_len_m / 1000.0,
-            "seg_start": seg_start,
-            "seg_end": seg_end,
+        # append info (raw segment time before any global scaling)
+        segment_infos.append({
+            "idx": i,
+            "d": d,
+            "seg_length_m": seg_length_m,
             "d_up": d_up,
             "d_down": d_down,
             "temp": temp_at_passage,
-            "mult_elev": mult_elev,
-            "mult_temp": mult_temp,
-            "mult_fatigue": mult_fatigue,
-            "combined_mult": combined_mult
+            "temp_mult": mult_temp,
+            "t_raw": t_km_after_temp
         })
 
-        cum_dist_m += seg_len_m
+        cum_time_temp += t_km_after_temp
 
-    # maintenant décider du "s" (temps plat par km de base) :
-    # - si objective_time_hms donné -> on choisit s de sorte que sum( s * seg_len_km * combined_mult ) == T_obj
-    # - sinon on utilise base_s_per_km_flat = base_flat_total / distance_cible_km
+    # If objective_time_hms provided -> scale segments so sum == objective_seconds
     if objective_time_hms:
-        T_obj = hms_to_seconds(objective_time_hms)
-        if T_obj <= 0:
-            raise ValueError("Temps objectif invalide.")
-        denom = sum(si["seg_len_km"] * si["combined_mult"] for si in seg_infos)
-        if denom <= 0:
-            s_unit = base_flat_total / max(distance_cible_km, 1e-6)
+        objective_seconds = hms_to_seconds(objective_time_hms)
+        sum_raw = sum(s["t_raw"] for s in segment_infos)
+        if sum_raw <= 0:
+            scale = 1.0
         else:
-            s_unit = T_obj / denom  # seconds per km base
+            scale = objective_seconds / sum_raw
     else:
-        # use model a,K
-        base_s_per_km_flat = (base_flat_total / distance_cible_km) if distance_cible_km > 0 else base_flat_total
-        s_unit = base_s_per_km_flat
+        scale = 1.0
 
-    # deuxième passe : construire résultats réels par segment en appliquant s_unit
-    cum_time = 0.0
-    running_km_index = 0.0
+    # Now build results with scaled times and cumulative
     results = []
-    for idx, si in enumerate(seg_infos):
-        seg_len_km = si["seg_len_km"]
-        seg_time = s_unit * seg_len_km * si["combined_mult"]
-        # label
-        start_km = running_km_index
-        end_km = running_km_index + seg_len_km
-        if seg_len_km >= 0.999:
-            # full km: show integer km
-            label = f"{int(end_km)}"
-        else:
-            # partial segment: show like "5→5.17" or "0.17"
-            label = f"{start_km:.2f}→{end_km:.2f}"
-        cum_time += seg_time
-
-        # allure segment (min/km) scaled for 1 km equivalent
-        pace_sec_per_km = seg_time / seg_len_km if seg_len_km > 0 else seg_time
-        pace_min = int(pace_sec_per_km // 60)
-        pace_sec = int(pace_sec_per_km % 60)
-
+    cum_time = 0.0
+    for seg in segment_infos:
+        t_km = seg["t_raw"] * scale
+        cum_time += t_km
+        # compute display pace per km (normalize to per 1000m)
+        pace_per_km = (t_km / seg["seg_length_m"]) * 1000.0 if seg["seg_length_m"] > 0 else t_km
         results.append({
-            "Km": label,
-            "Distance (km)": round(seg_len_km, 3),
-            "D+ (m)": round(si["d_up"], 1),
-            "D- (m)": round(si["d_down"], 1),
-            "Temp (°C)": round(si["temp"], 1) if si["temp"] is not None else None,
-            "Mult élév.": round(si["mult_elev"], 4),
-            "Mult temp": round(si["mult_temp"], 4),
-            "Mult fatigue": round(si["mult_fatigue"], 4),
-            "Mult comb.": round(si["combined_mult"], 4),
-            "Temps segment (s)": round(seg_time, 1),
-            "Allure seg (min/km)": f"{pace_min}:{pace_sec:02d}",
-            "Temps cumulé": seconds_to_hms(cum_time)
+            "Km": seg["idx"] + 1 if seg["seg_length_m"] >= 1000 - 1e-6 else f"{seg['idx']+1} ({seg['seg_length_m']:.0f}m)",
+            "D+ (m)": round(seg["d_up"], 1),
+            "D- (m)": round(seg["d_down"], 1),
+            "Temp (°C)": round(seg["temp"], 1) if seg["temp"] is not None else None,
+            "Temp Mult.": round(seg["temp_mult"], 4),
+            "Temps segment (s)": round(t_km, 1),
+            "Allure (min/km)": pace_seconds_to_str_per_km(pace_per_km),
+            "Temps cumulé": seconds_to_hms(cum_time),
         })
-
-        running_km_index = end_km
-
-    total_seconds = cum_time
-    total_human = seconds_to_hms(total_seconds)
 
     df = pd.DataFrame(results)
-
+    total_seconds = sum(s["t_raw"] for s in segment_infos) * scale
     return {
         "df": df,
         "total_seconds": total_seconds,
-        "total_human": total_human,
+        "total_human": seconds_to_hms(total_seconds),
         "distance_gpx_km": distance_gpx_km,
         "method_used": method_used,
         "debug": debug,
@@ -536,7 +649,6 @@ if st.button("▶️ Calculer prédiction (BASE, d'après références)"):
         st.error("Importe un fichier GPX d'abord.")
     else:
         gpx, points = parse_gpx_points(gpx_file)
-        # run base (no force)
         res_base = run_prediction_df(
             distance_cible_km=None,
             refs_input=refs,
@@ -571,12 +683,7 @@ if st.button("📊 Calculer prédiction finale (FORCÉ si activé)"):
         st.error("Importe un fichier GPX d'abord.")
     else:
         gpx, points = parse_gpx_points(gpx_file)
-        # determine distance to use for forced run
-        dist_target = None
-        if force_distance_checkbox and distance_forced_km:
-            dist_target = distance_forced_km
-        else:
-            dist_target = None  # run_prediction_df will use GPX distance if None
+        dist_target = distance_forced_km if force_distance_checkbox and distance_forced_km else None
 
         res_forced = run_prediction_df(
             distance_cible_km=dist_target,
@@ -605,8 +712,9 @@ if "res_base" in st.session_state or "res_forced" in st.session_state:
     with left:
         st.subheader("📈 Base (d'après références)")
         if base:
+            avg_pace_base = base["total_seconds"] / max(base["distance_gpx_km"], 1e-6)
             st.write(f"Distance GPX détectée: {base['distance_gpx_km']:.3f} km (méthode: {base['method_used']})")
-            st.write(f"Temps total (base): {base['total_human']}")
+            st.write(f"Temps total (base): {base['total_human']}  ({pace_seconds_to_str_per_km(avg_pace_base)} / km)")
             st.dataframe(base["df"], use_container_width=True)
         else:
             st.info("Clique sur 'Calculer prédiction (BASE)' pour générer ce tableau.")
@@ -614,8 +722,10 @@ if "res_base" in st.session_state or "res_forced" in st.session_state:
     with right:
         st.subheader("🎯 Forcé (distance/temps forcés)")
         if forced:
-            st.write(f"Distance cible: {distance_forced_km if force_distance_checkbox else round(forced['distance_gpx_km'],3)} km")
-            st.write(f"Temps total (forcé): {forced['total_human']}")
+            dist_display = (distance_forced_km if (force_distance_checkbox and distance_forced_km) else round(forced['distance_gpx_km'],3))
+            avg_pace_forced = forced["total_seconds"] / max(float(dist_display), 1e-6)
+            st.write(f"Distance cible: {dist_display} km")
+            st.write(f"Temps total (forcé): {forced['total_human']}  ({pace_seconds_to_str_per_km(avg_pace_forced)} / km)")
             st.dataframe(forced["df"], use_container_width=True)
         else:
             st.info("Clique sur 'Calculer prédiction finale (FORCÉ)' pour générer ce tableau.")
@@ -659,7 +769,7 @@ if gpx_file:
         x_km = np.array(cumdists) / 1000.0  # distance en km
         y_elev = np.array([p.elevation or 0 for p in points])
 
-        plt.plot(x_km, y_elev, color="blue", lw=2)
+        plt.plot(x_km, y_elev, lw=2)
         plt.xlabel("Distance (km)")
         plt.ylabel("Altitude (m)")
         plt.title(f"Profil d'altitude du parcours (méthode {method_used})")

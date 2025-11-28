@@ -298,7 +298,6 @@ def compute_total_and_cumdist(points):
 # ---------------- UI & Inputs ----------------
 st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
-# if a GPX is uploaded, parse immediately to store original distance
 if gpx_file:
     try:
         gpx_tmp, pts_tmp = parse_gpx_points(gpx_file)
@@ -380,23 +379,10 @@ for i in range(1, st.session_state.n_refs + 1):
 
 # --- Affichage du temps corrigé 0% pente & 12°C ---
 secs = hms_to_seconds(temps)
-# si on a la température de référence historique, sinon 12°C
-temp_ref = r.get("_temp_ref", 12.0)
-
-# appliquer l’inverse des effets de pente (neutralisation)
-t_corr = apply_elevation_gradient_route(
-    secs,
-    dup,
-    ddn,
-    segment_length_m=dist,
-    k_up=k_up if use_elev_coeff else 1.0,
-    k_down=k_down if use_elev_coeff else 1.0
-)
-# diviser par le facteur de température pour neutraliser l’effet
-if use_temp_coeff and temp_ref is not None:
-    mult_temp_ref = temp_multiplier_nonlin(temp_ref, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold)
-    t_corr /= mult_temp_ref
-
+t_corr = apply_elevation_gradient_route(secs, dup, ddn, segment_length_m=dist)
+# temp par défaut 12°C pour neutraliser l’effet
+mult_temp_ref = temp_multiplier_nonlin(12.0)
+t_corr /= mult_temp_ref
 temps_flat_0pct_12C = seconds_to_hms(t_corr)
 st.markdown(f"*Temps corrigé 0% pente & 12°C : {temps_flat_0pct_12C}*")
 

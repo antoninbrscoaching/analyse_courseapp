@@ -378,11 +378,27 @@ for i in range(1, st.session_state.n_refs + 1):
                     else:
                         st.warning("Fichier non exploitable.")
 
-    # --- Affichage du temps ajusté 0% pente, 12°C ---
-    temps_flat_12C = get_flat_reference_time({"temps": temps})
-    st.markdown(f"*Temps ajusté à 0% pente et 12°C : {temps_flat_12C}*")
+# --- Affichage du temps corrigé 0% pente & 12°C ---
+secs = hms_to_seconds(temps)
+# si on a la température de référence historique, sinon 12°C
+temp_ref = r.get("_temp_ref", 12.0)
 
-    refs.append(dict(distance=dist, temps=temps, D_up=dup, D_down=ddn))
+# appliquer l’inverse des effets de pente (neutralisation)
+t_corr = apply_elevation_gradient_route(
+    secs,
+    dup,
+    ddn,
+    segment_length_m=dist,
+    k_up=k_up if use_elev_coeff else 1.0,
+    k_down=k_down if use_elev_coeff else 1.0
+)
+# diviser par le facteur de température pour neutraliser l’effet
+if use_temp_coeff and temp_ref is not None:
+    mult_temp_ref = temp_multiplier_nonlin(temp_ref, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold)
+    t_corr /= mult_temp_ref
+
+temps_flat_0pct_12C = seconds_to_hms(t_corr)
+st.markdown(f"*Temps corrigé 0% pente & 12°C : {temps_flat_0pct_12C}*")
 
 st.header("3️⃣ Paramètres modèle")
 c1, c2 = st.columns(2)

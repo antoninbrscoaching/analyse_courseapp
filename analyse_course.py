@@ -203,6 +203,7 @@ def get_temp_for_datetime(hourly_dict, target_dt):
 # ------------------------------------------------------
 # Modèle log-log & utilitaires
 # ------------------------------------------------------
+
 def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
     xs, ys = [], []
     for r in refs:
@@ -212,8 +213,12 @@ def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
         ddn = float(r.get("D_down", 0) or 0)
         if d <= 0 or t_raw <= 0:
             continue
-        elev_factor = (k_up ** dup) * (k_down ** ddn)
+        # --- Correction appliquée : coefficients par % de pente ---
+        g_up = (dup / d) * 100.0  # pente montée en %
+        g_down = (ddn / d) * 100.0  # pente descente en %
+        elev_factor = (k_up ** g_up) * (k_down ** g_down)
         t_eq = t_raw / elev_factor if elev_factor > 0 else t_raw
+        # ----------------------------------------------------------
         if t_eq <= 0:
             continue
         xs.append(math.log(d))

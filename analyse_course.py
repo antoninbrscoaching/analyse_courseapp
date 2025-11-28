@@ -318,6 +318,11 @@ with cols[1]:
     if st.button("➖ Retirer") and st.session_state.n_refs > 1:
         st.session_state.n_refs -= 1
 
+# --- Fonction helper pour temps plat / 12°C ---
+def get_flat_reference_time(ref):
+    secs = hms_to_seconds(ref.get("temps", "0:00:00"))
+    return seconds_to_hms(secs)
+
 refs = []
 for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
@@ -335,7 +340,6 @@ for i in range(1, st.session_state.n_refs + 1):
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
         if file_in:
-            # detect extension by name if exists, otherwise attempt parse fit then tcx
             name = getattr(file_in, "name", "") or ""
             if name.lower().endswith(".fit"):
                 data_fit = parse_fit(file_in)
@@ -345,7 +349,6 @@ for i in range(1, st.session_state.n_refs + 1):
                 else:
                     st.warning("Fichier FIT non exploitable.")
             elif name.lower().endswith(".tcx"):
-                # parse tcx to extract distance and elevation/duration
                 tcx_res = parse_tcx(file_in)
                 if tcx_res:
                     dist = int(round(tcx_res["distance"]))
@@ -357,7 +360,6 @@ for i in range(1, st.session_state.n_refs + 1):
                 else:
                     st.warning("Fichier TCX non exploitable.")
             else:
-                # try both
                 file_in.seek(0)
                 data_fit = parse_fit(file_in)
                 if data_fit:
@@ -375,6 +377,11 @@ for i in range(1, st.session_state.n_refs + 1):
                         st.info(f"✔ TCX détecté : {dist}m | D+{dup} | D-{ddn} | dur: {temps}")
                     else:
                         st.warning("Fichier non exploitable.")
+
+    # --- Affichage du temps ajusté 0% pente, 12°C ---
+    temps_flat_12C = get_flat_reference_time({"temps": temps})
+    st.markdown(f"*Temps ajusté à 0% pente et 12°C : {temps_flat_12C}*")
+
     refs.append(dict(distance=dist, temps=temps, D_up=dup, D_down=ddn))
 
 st.header("3️⃣ Paramètres modèle")

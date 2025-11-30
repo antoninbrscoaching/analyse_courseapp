@@ -377,11 +377,23 @@ for i in range(1, st.session_state.n_refs + 1):
                     else:
                         st.warning("Fichier non exploitable.")
 
+    # --- IMPORTANT: add the reference dict so all refs are collected for fitting
+    refs.append({
+        "distance": float(dist or 0.0),
+        "temps": temps or "00:00:00",
+        "D_up": float(dup or 0.0),
+        "D_down": float(ddn or 0.0)
+    })
+
 # ==============================================================
 # TEMPS CORRIGÉS 0% & 12°C POUR TOUTES LES RÉFÉRENCES IMPORTÉES
 # ==============================================================
 
 st.subheader("⏱️ Temps corrigés des références (0% & 12°C)")
+
+# use default coeff if widgets not yet set
+_default_k_up = 1.040
+_default_k_down = 0.996
 
 for i in range(1, st.session_state.n_refs + 1):
 
@@ -394,14 +406,14 @@ for i in range(1, st.session_state.n_refs + 1):
         # Conversion temps → secondes
         secs = hms_to_seconds(temps)
 
-        # Corr. pente : utilisation de ta correction en % de pente
+        # Corr. pente : utilisation de la correction en % de pente
         t_corr_pente = apply_elevation_gradient_route(
-            t_km_flat=secs,
+            time_flat_s=secs,
             d_up_m=dup,
             d_down_m=ddn,
             segment_length_m=dist,   # NOTE : dist en mètres
-            k_up=st.session_state.k_up,
-            k_down=st.session_state.k_down,
+            k_up=_default_k_up,
+            k_down=_default_k_down,
         )
 
         # Corr. température : neutralisation à 12°C
@@ -410,10 +422,8 @@ for i in range(1, st.session_state.n_refs + 1):
 
         t_corr_hms = seconds_to_hms(t_corr_final)
 
-        st.markdown(
-            f"**Référence {i} — Temps corrigé 0% & 12°C : `{t_corr_hms}`**  
-            *(Temps brut : {temps}, D+ {dup} m / D- {ddn} m)*"
-        )
+        # single-line f-string (no unintended newline)
+        st.markdown(f"**Référence {i} — Temps corrigé 0% & 12°C : `{t_corr_hms}`**  *(Temps brut : {temps}, D+ {dup} m / D- {ddn} m)*")
 
     except Exception as e:
         st.warning(f"Impossible de corriger la référence {i} : {e}")

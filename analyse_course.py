@@ -377,14 +377,46 @@ for i in range(1, st.session_state.n_refs + 1):
                     else:
                         st.warning("Fichier non exploitable.")
 
-# --- Affichage du temps corrigé 0% pente & 12°C ---
-secs = hms_to_seconds(temps)
-t_corr = apply_elevation_gradient_route(secs, dup, ddn, segment_length_m=dist)
-# temp par défaut 12°C pour neutraliser l’effet
-mult_temp_ref = temp_multiplier_nonlin(12.0)
-t_corr /= mult_temp_ref
-temps_flat_0pct_12C = seconds_to_hms(t_corr)
-st.markdown(f"*Temps corrigé 0% pente & 12°C : {temps_flat_0pct_12C}*")
+# ==============================================================
+# TEMPS CORRIGÉS 0% & 12°C POUR TOUTES LES RÉFÉRENCES IMPORTÉES
+# ==============================================================
+
+st.subheader("⏱️ Temps corrigés des références (0% & 12°C)")
+
+for i in range(1, st.session_state.n_refs + 1):
+
+    dist = st.session_state.get(f"dist_{i}", 0.0)
+    temps = st.session_state.get(f"temps_{i}", "00:00:00")
+    dup = float(st.session_state.get(f"dup_{i}", 0.0))
+    ddn = float(st.session_state.get(f"ddn_{i}", 0.0))
+
+    try:
+        # Conversion temps → secondes
+        secs = hms_to_seconds(temps)
+
+        # Corr. pente : utilisation de ta correction en % de pente
+        t_corr_pente = apply_elevation_gradient_route(
+            t_km_flat=secs,
+            d_up_m=dup,
+            d_down_m=ddn,
+            segment_length_m=dist,   # NOTE : dist en mètres
+            k_up=st.session_state.k_up,
+            k_down=st.session_state.k_down,
+        )
+
+        # Corr. température : neutralisation à 12°C
+        mult_temp_ref = temp_multiplier_nonlin(12.0)
+        t_corr_final = t_corr_pente / mult_temp_ref
+
+        t_corr_hms = seconds_to_hms(t_corr_final)
+
+        st.markdown(
+            f"**Référence {i} — Temps corrigé 0% & 12°C : `{t_corr_hms}`**  
+            *(Temps brut : {temps}, D+ {dup} m / D- {ddn} m)*"
+        )
+
+    except Exception as e:
+        st.warning(f"Impossible de corriger la référence {i} : {e}")
 
 st.header("3️⃣ Paramètres modèle")
 c1, c2 = st.columns(2)

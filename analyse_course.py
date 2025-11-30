@@ -49,7 +49,6 @@ def haversine_m(lat1, lon1, lat2, lon2):
     a = math.sin(dphi/2.0)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2.0)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# Classe minimale "point-like" pour TCX parsing
 class SimplePoint:
     def __init__(self, lat, lon, elev=0.0, time=None):
         self.latitude = float(lat)
@@ -167,14 +166,53 @@ def parse_tcx(file):
         "duration_hms": duration_hms
     }
 
-# ------------------------------------------------------
-# helper pour mettre à jour session
-# ------------------------------------------------------
+# ---------------- Session helpers ----------------
 def update_ref_session(i, dist, temps, dup, ddn):
     st.session_state[f"dist_{i}"] = float(dist or 0.0)
     st.session_state[f"temps_{i}"] = str(temps or "00:00:00")
     st.session_state[f"dup_{i}"] = float(dup or 0.0)
     st.session_state[f"ddn_{i}"] = float(ddn or 0.0)
+
+# ---------------- Placeholders / Functions manquantes ----------------
+def compute_total_and_cumdist(points):
+    cumdists = [0.0]
+    total = 0.0
+    prev = points[0]
+    for p in points[1:]:
+        d = prev.distance_3d(p)
+        total += d
+        cumdists.append(total)
+        prev = p
+    return total, cumdists, "haversine", {}
+
+def apply_elevation_gradient_route(time_flat_s, d_up_m, d_down_m, segment_length_m, k_up=1.04, k_down=0.996):
+    factor = 1 + (d_up_m * (k_up - 1) - d_down_m * (1 - k_down)) / max(segment_length_m,1e-6)
+    return max(time_flat_s * factor, 0)
+
+def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
+    diff = temp - opt_temp
+    if diff > 0:
+        return 1.0 + k_hot * diff
+    else:
+        return 1.0 + k_cold * diff
+
+def fit_loglog_model(refs, k_up=1.04, k_down=0.996):
+    # placeholder, return a and K
+    return 1.0, 1.0
+
+def predict_time_flat(distance_m, a, K):
+    return distance_m / 3.0  # placeholder vitesse 3 m/s
+
+def override_with_objective(distance_m, objective_time_hms, K):
+    return 1.0
+
+def get_temp_for_datetime(hourly_temps_cache, dt):
+    # placeholder: return 12°C
+    return 12.0
+
+@st.cache_data(ttl=60)
+def fetch_open_meteo_hourly(lat, lon, start_iso, end_iso):
+    return {}  # placeholder, empty cache
 
 # ---------------- UI & Inputs ----------------
 st.header("1️⃣ Parcours GPX")

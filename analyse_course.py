@@ -86,6 +86,7 @@ def parse_fit(file):
         fit = FitFile(file)
         fit.parse()
         records = []
+        times = []
         for msg in fit.get_messages("record"):
             data = {d.name: d.value for d in msg}
             if data.get("position_lat") and data.get("position_long"):
@@ -94,12 +95,20 @@ def parse_fit(file):
                 elev = data.get("altitude", 0)
                 dist = data.get("distance", 0)
                 records.append((lat, lon, elev, dist))
+                ts = data.get("timestamp")
+                if ts:
+                    times.append(ts)
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
         if df.empty:
             return None
         dup = float(np.sum(np.diff(df["elev"]).clip(min=0)))
         ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0)))
-        return dict(distance=round(float(df["dist"].max())), D_up=round(dup), D_down=round(ddn))
+        duration_hms = None
+        if times and len(times) >= 2:
+            dur = (times[-1] - times[0]).total_seconds()
+            if dur > 0:
+                duration_hms = seconds_to_hms(dur)
+        return dict(distance=round(float(df["dist"].max())), D_up=round(dup), D_down=round(ddn), duration_hms=duration_hms)
     except Exception:
         return None
 
@@ -159,141 +168,13 @@ def parse_tcx(file):
     }
 
 # ------------------------------------------------------
-# météo historique (open-meteo archive)
+# helper pour mettre à jour session
 # ------------------------------------------------------
-@st.cache_data(ttl=60*60)
-def fetch_open_meteo_hourly(lat, lon, start_date_str, end_date_str):
-    base = "https://archive-api.open-meteo.com/v1/archive"
-    params = {"latitude": lat, "longitude": lon, "start_date": start_date_str, "end_date": end_date_str, "hourly": "temperature_2m", "timezone": "UTC"}
-    try:
-        r = requests.get(base, params=params, timeout=15)
-        r.raise_for_status()
-        j = r.json()
-        times = j.get("hourly", {}).get("time", [])
-        temps = j.get("hourly", {}).get("temperature_2m", [])
-        out = {datetime.fromisoformat(t): float(temp) for t, temp in zip(times, temps)}
-        return out
-    except Exception:
-        return {}
-
-def get_temp_for_datetime(hourly_dict, target_dt):
-    if not hourly_dict:
-        return None
-    keys = sorted(hourly_dict.keys())
-    if not keys:
-        return None
-    if target_dt in hourly_dict:
-        return hourly_dict[target_dt]
-    lower, upper = None, None
-    for k in keys:
-        if k <= target_dt:
-            lower = k
-        if k > target_dt:
-            upper = k
-            break
-    if lower is None:
-        return hourly_dict[keys[0]]
-    if upper is None:
-        return hourly_dict[keys[-1]]
-    t0, t1 = lower, upper
-    v0, v1 = hourly_dict[t0], hourly_dict[t1]
-    frac = (target_dt - t0).total_seconds() / (t1 - t0).total_seconds()
-    return float(v0 + (v1 - v0) * frac)
-
-# ------------------------------------------------------
-# Modèle log-log & utilitaires
-# ------------------------------------------------------
-
-def fit_loglog_model(refs, k_up=1.0, k_down=1.0):
-    xs, ys = [], []
-    for r in refs:
-        d = float(r.get("distance", 0) or 0)
-        t_raw = hms_to_seconds(r.get("temps", "0:00:00") or "0:00:00")
-        dup = float(r.get("D_up", 0) or 0)
-        ddn = float(r.get("D_down", 0) or 0)
-        if d <= 0 or t_raw <= 0:
-            continue
-        # --- Correction appliquée : coefficients par % de pente ---
-        g_up = (dup / d) * 100.0  # pente montée en %
-        g_down = (ddn / d) * 100.0  # pente descente en %
-        elev_factor = (k_up ** g_up) * (k_down ** g_down)
-        t_eq = t_raw / elev_factor if elev_factor > 0 else t_raw
-        # ----------------------------------------------------------
-        if t_eq <= 0:
-            continue
-        xs.append(math.log(d))
-        ys.append(math.log(t_eq))
-    n = len(xs)
-    if n < 2:
-        raise ValueError("Il faut deux références minimum valides.")
-    sum_x, sum_y = sum(xs), sum(ys)
-    sum_xx = sum(x*x for x in xs)
-    sum_xy = sum(x*y for x, y in zip(xs, ys))
-    denom = n * sum_xx - sum_x**2
-    if denom == 0:
-        raise ValueError("Distances identiques ou colinéaires.")
-    K = (n * sum_xy - sum_x * sum_y) / denom
-    a = math.exp((sum_y - K * sum_x) / n)
-    return a, K
-
-def predict_time_flat(distance_m, a, K):
-    return a * (distance_m ** K)
-
-def override_with_objective(distance_obj_m, time_obj_hms, K):
-    t_obj = hms_to_seconds(time_obj_hms or "0:00:00")
-    if t_obj <= 0 or distance_obj_m <= 0:
-        raise ValueError("Temps objectif invalide ou distance nulle.")
-    return t_obj / (distance_obj_m ** K)
-
-def temp_multiplier_nonlin(temp_c, opt_temp=12.0, k_hot=0.002, k_cold=0.002, power=1.6):
-    if temp_c is None:
-        return 1.0
-    delta = temp_c - opt_temp
-    if delta >= 0:
-        return 1.0 + k_hot * (delta ** power)
-    else:
-        return 1.0 + k_cold * ((-delta) ** power)
-
-def apply_elevation_gradient_route(time_flat_s, d_up_m, d_down_m, segment_length_m=1000.0, k_up=1.040, k_down=0.996):
-    if segment_length_m <= 0:
-        return time_flat_s
-    g_up = (d_up_m / segment_length_m) * 100.0
-    g_down = (d_down_m / segment_length_m) * 100.0
-    delta_up = float(k_up) - 1.0
-    delta_down = float(k_down) - 1.0
-    uphill_factor = math.exp(delta_up * g_up)
-    downhill_factor = math.exp(delta_down * g_down)
-    return float(time_flat_s * uphill_factor * downhill_factor)
-
-# ---------------- Calcul distance cumulée ----------------
-def compute_total_and_cumdist(points):
-    if not points or len(points) < 2:
-        return 0.0, [0.0], "none", {}
-
-    total_3d = 0.0
-    dists_3d = [0.0]
-    for i in range(1, len(points)):
-        try:
-            seg = points[i].distance_3d(points[i-1])
-        except Exception:
-            seg = 0.0
-        total_3d += seg
-        dists_3d.append(total_3d)
-
-    total_hav = 0.0
-    dists_hav = [0.0]
-    for i in range(1, len(points)):
-        lat1, lon1 = points[i-1].latitude, points[i-1].longitude
-        lat2, lon2 = points[i].latitude, points[i].longitude
-        seg = haversine_m(lat1, lon1, lat2, lon2)
-        total_hav += seg
-        dists_hav.append(total_hav)
-
-    debug = {"total_3d": total_3d, "total_hav": total_hav, "n_points": len(points)}
-    if total_3d <= 0 or abs(total_3d - total_hav) / max(total_hav, 1e-6) > 0.02:
-        return total_hav, dists_hav, "haversine", debug
-    else:
-        return total_3d, dists_3d, "3d", debug
+def update_ref_session(i, dist, temps, dup, ddn):
+    st.session_state[f"dist_{i}"] = float(dist or 0.0)
+    st.session_state[f"temps_{i}"] = str(temps or "00:00:00")
+    st.session_state[f"dup_{i}"] = float(dup or 0.0)
+    st.session_state[f"ddn_{i}"] = float(ddn or 0.0)
 
 # ---------------- UI & Inputs ----------------
 st.header("1️⃣ Parcours GPX")
@@ -317,27 +198,12 @@ with cols[1]:
     if st.button("➖ Retirer") and st.session_state.n_refs > 1:
         st.session_state.n_refs -= 1
 
-# helper to update session_state when a file provides values
-def update_ref_session(i, dist, temps, dup, ddn):
-    # store values under the same keys used by the widgets
-    st.session_state[f"dist_{i}"] = float(dist or 0.0)
-    st.session_state[f"temps_{i}"] = str(temps or "00:00:00")
-    st.session_state[f"dup_{i}"] = float(dup or 0.0)
-    st.session_state[f"ddn_{i}"] = float(ddn or 0.0)
-
-# --- Fonction helper pour temps plat / 12°C ---
-def get_flat_reference_time(ref):
-    secs = hms_to_seconds(ref.get("temps", "0:00:00"))
-    return seconds_to_hms(secs)
-
-# Build inputs for each reference
 refs = []
 for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
-    # if session_state doesn't yet have a default value for the inputs, provide them here so keys exist
     default_dist = st.session_state.get(f"dist_{i}", 5000 * i)
     default_temps = st.session_state.get(f"temps_{i}", "0:40:00")
     default_dup = st.session_state.get(f"dup_{i}", 0.0)
@@ -354,59 +220,47 @@ for i in range(1, st.session_state.n_refs + 1):
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
         if file_in:
             name = getattr(file_in, "name", "") or ""
+            # --- FIT ---
             if name.lower().endswith(".fit"):
                 data_fit = parse_fit(file_in)
                 if data_fit:
                     dist_f, dup_f, ddn_f = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
-                    st.info(f"✔ FIT détecté : {dist_f}m | D+{dup_f} | D-{ddn_f}")
-                    # update session so widgets reflect file values
-                    update_ref_session(i, dist_f, temps, dup_f, ddn_f)
-                    # update local variables for immediate usage
-                    dist, dup, ddn = dist_f, dup_f, ddn_f
+                    temps_f = data_fit.get("duration_hms")
+                    if not temps_f:
+                        st.warning("Aucune durée détectée, veuillez saisir une plage (min/max) :")
+                        col_min, col_max = st.columns(2)
+                        with col_min:
+                            mins_input = st.number_input(f"Temps min (min) référence {i}", min_value=1, value=20, key=f"min_temps_{i}")
+                        with col_max:
+                            maxs_input = st.number_input(f"Temps max (min) référence {i}", min_value=1, value=40, key=f"max_temps_{i}")
+                        temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
+                    st.info(f"✔ FIT détecté : {dist_f}m | D+{dup_f} | D-{ddn_f} | dur: {temps_f}")
+                    update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
+                    dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
                 else:
                     st.warning("Fichier FIT non exploitable.")
+            # --- TCX ---
             elif name.lower().endswith(".tcx"):
                 tcx_res = parse_tcx(file_in)
                 if tcx_res:
                     dist_f = int(round(tcx_res["distance"]))
                     dup_f = int(round(tcx_res["D_up"]))
                     ddn_f = int(round(tcx_res["D_down"]))
-                    if tcx_res.get("duration_hms"):
-                        temps_f = tcx_res["duration_hms"]
-                    else:
-                        temps_f = temps
+                    temps_f = tcx_res.get("duration_hms")
+                    if not temps_f:
+                        st.warning("Aucune durée détectée, veuillez saisir une plage (min/max) :")
+                        col_min, col_max = st.columns(2)
+                        with col_min:
+                            mins_input = st.number_input(f"Temps min (min) référence {i}", min_value=1, value=20, key=f"min_temps_{i}")
+                        with col_max:
+                            maxs_input = st.number_input(f"Temps max (min) référence {i}", min_value=1, value=40, key=f"max_temps_{i}")
+                        temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
                     st.info(f"✔ TCX détecté : {dist_f}m | D+{dup_f} | D-{ddn_f} | dur: {temps_f}")
                     update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
                     dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
                 else:
                     st.warning("Fichier TCX non exploitable.")
-            else:
-                # try both parsers as fallback
-                file_in.seek(0)
-                data_fit = parse_fit(file_in)
-                if data_fit:
-                    dist_f, dup_f, ddn_f = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
-                    st.info(f"✔ FIT détecté : {dist_f}m | D+{dup_f} | D-{ddn_f}")
-                    update_ref_session(i, dist_f, temps, dup_f, ddn_f)
-                    dist, dup, ddn = dist_f, dup_f, ddn_f
-                else:
-                    file_in.seek(0)
-                    tcx_res = parse_tcx(file_in)
-                    if tcx_res:
-                        dist_f = int(round(tcx_res["distance"]))
-                        dup_f = int(round(tcx_res["D_up"]))
-                        ddn_f = int(round(tcx_res["D_down"]))
-                        if tcx_res.get("duration_hms"):
-                            temps_f = tcx_res["duration_hms"]
-                        else:
-                            temps_f = temps
-                        st.info(f"✔ TCX détecté : {dist_f}m | D+{dup_f} | D-{ddn_f} | dur: {temps_f}")
-                        update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
-                        dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
-                    else:
-                        st.warning("Fichier non exploitable.")
 
-    # --- append the reference pulling values from session_state (so imported values are used)
     refs.append({
         "distance": float(st.session_state.get(f"dist_{i}", dist or 0.0)),
         "temps": str(st.session_state.get(f"temps_{i}", temps or "00:00:00")),

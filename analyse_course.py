@@ -317,25 +317,39 @@ with cols[1]:
     if st.button("➖ Retirer") and st.session_state.n_refs > 1:
         st.session_state.n_refs -= 1
 
+# helper to update session_state when a file provides values
+def update_ref_session(i, dist, temps, dup, ddn):
+    # store values under the same keys used by the widgets
+    st.session_state[f"dist_{i}"] = float(dist or 0.0)
+    st.session_state[f"temps_{i}"] = str(temps or "00:00:00")
+    st.session_state[f"dup_{i}"] = float(dup or 0.0)
+    st.session_state[f"ddn_{i}"] = float(ddn or 0.0)
+
 # --- Fonction helper pour temps plat / 12°C ---
 def get_flat_reference_time(ref):
     secs = hms_to_seconds(ref.get("temps", "0:00:00"))
     return seconds_to_hms(secs)
 
+# Build inputs for each reference
 refs = []
 for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
+    # if session_state doesn't yet have a default value for the inputs, provide them here so keys exist
+    default_dist = st.session_state.get(f"dist_{i}", 5000 * i)
+    default_temps = st.session_state.get(f"temps_{i}", "0:40:00")
+    default_dup = st.session_state.get(f"dup_{i}", 0.0)
+    default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
     with c2:
-        dist = st.number_input(f"Dist {i} (m)", value=5000 * i, key=f"dist_{i}")
+        dist = st.number_input(f"Dist {i} (m)", value=default_dist, key=f"dist_{i}")
     with c3:
-        temps = st.text_input(f"Temps {i} (h:mm:ss)", value="0:40:00", key=f"temps_{i}")
+        temps = st.text_input(f"Temps {i} (h:mm:ss)", value=default_temps, key=f"temps_{i}")
     with c4:
-        dup = st.number_input(f"D+ {i}", value=0.0, key=f"dup_{i}")
+        dup = st.number_input(f"D+ {i}", value=default_dup, key=f"dup_{i}")
     with c5:
-        ddn = st.number_input(f"D- {i}", value=0.0, key=f"ddn_{i}")
+        ddn = st.number_input(f"D- {i}", value=default_ddn, key=f"ddn_{i}")
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
         if file_in:
@@ -343,46 +357,61 @@ for i in range(1, st.session_state.n_refs + 1):
             if name.lower().endswith(".fit"):
                 data_fit = parse_fit(file_in)
                 if data_fit:
-                    dist, dup, ddn = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
-                    st.info(f"✔ FIT détecté : {dist}m | D+{dup} | D-{ddn}")
+                    dist_f, dup_f, ddn_f = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
+                    st.info(f"✔ FIT détecté : {dist_f}m | D+{dup_f} | D-{ddn_f}")
+                    # update session so widgets reflect file values
+                    update_ref_session(i, dist_f, temps, dup_f, ddn_f)
+                    # update local variables for immediate usage
+                    dist, dup, ddn = dist_f, dup_f, ddn_f
                 else:
                     st.warning("Fichier FIT non exploitable.")
             elif name.lower().endswith(".tcx"):
                 tcx_res = parse_tcx(file_in)
                 if tcx_res:
-                    dist = int(round(tcx_res["distance"]))
-                    dup = int(round(tcx_res["D_up"]))
-                    ddn = int(round(tcx_res["D_down"]))
+                    dist_f = int(round(tcx_res["distance"]))
+                    dup_f = int(round(tcx_res["D_up"]))
+                    ddn_f = int(round(tcx_res["D_down"]))
                     if tcx_res.get("duration_hms"):
-                        temps = tcx_res["duration_hms"]
-                    st.info(f"✔ TCX détecté : {dist}m | D+{dup} | D-{ddn} | dur: {temps}")
+                        temps_f = tcx_res["duration_hms"]
+                    else:
+                        temps_f = temps
+                    st.info(f"✔ TCX détecté : {dist_f}m | D+{dup_f} | D-{ddn_f} | dur: {temps_f}")
+                    update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
+                    dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
                 else:
                     st.warning("Fichier TCX non exploitable.")
             else:
+                # try both parsers as fallback
                 file_in.seek(0)
                 data_fit = parse_fit(file_in)
                 if data_fit:
-                    dist, dup, ddn = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
-                    st.info(f"✔ FIT détecté : {dist}m | D+{dup} | D-{ddn}")
+                    dist_f, dup_f, ddn_f = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
+                    st.info(f"✔ FIT détecté : {dist_f}m | D+{dup_f} | D-{ddn_f}")
+                    update_ref_session(i, dist_f, temps, dup_f, ddn_f)
+                    dist, dup, ddn = dist_f, dup_f, ddn_f
                 else:
                     file_in.seek(0)
                     tcx_res = parse_tcx(file_in)
                     if tcx_res:
-                        dist = int(round(tcx_res["distance"]))
-                        dup = int(round(tcx_res["D_up"]))
-                        ddn = int(round(tcx_res["D_down"]))
+                        dist_f = int(round(tcx_res["distance"]))
+                        dup_f = int(round(tcx_res["D_up"]))
+                        ddn_f = int(round(tcx_res["D_down"]))
                         if tcx_res.get("duration_hms"):
-                            temps = tcx_res["duration_hms"]
-                        st.info(f"✔ TCX détecté : {dist}m | D+{dup} | D-{ddn} | dur: {temps}")
+                            temps_f = tcx_res["duration_hms"]
+                        else:
+                            temps_f = temps
+                        st.info(f"✔ TCX détecté : {dist_f}m | D+{dup_f} | D-{ddn_f} | dur: {temps_f}")
+                        update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
+                        dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
                     else:
                         st.warning("Fichier non exploitable.")
 
-    # --- IMPORTANT: add the reference dict so all refs are collected for fitting
+    # --- append the reference pulling values from session_state (so imported values are used)
     refs.append({
-        "distance": float(dist or 0.0),
-        "temps": temps or "00:00:00",
-        "D_up": float(dup or 0.0),
-        "D_down": float(ddn or 0.0)
+        "distance": float(st.session_state.get(f"dist_{i}", dist or 0.0)),
+        "temps": str(st.session_state.get(f"temps_{i}", temps or "00:00:00")),
+        "D_up": float(st.session_state.get(f"dup_{i}", dup or 0.0)),
+        "D_down": float(st.session_state.get(f"ddn_{i}", ddn or 0.0))
     })
 
 # ==============================================================
@@ -397,6 +426,7 @@ _default_k_down = 0.996
 
 for i in range(1, st.session_state.n_refs + 1):
 
+    # read from session_state (this ensures we reflect imports)
     dist = st.session_state.get(f"dist_{i}", 0.0)
     temps = st.session_state.get(f"temps_{i}", "00:00:00")
     dup = float(st.session_state.get(f"dup_{i}", 0.0))
@@ -411,14 +441,15 @@ for i in range(1, st.session_state.n_refs + 1):
             time_flat_s=secs,
             d_up_m=dup,
             d_down_m=ddn,
-            segment_length_m=dist,   # NOTE : dist en mètres
+            segment_length_m=dist if dist > 0 else 1000.0,   # NOTE : dist en mètres, fallback to 1000m
             k_up=_default_k_up,
             k_down=_default_k_down,
         )
 
         # Corr. température : neutralisation à 12°C
         mult_temp_ref = temp_multiplier_nonlin(12.0)
-        t_corr_final = t_corr_pente / mult_temp_ref
+        # neutralisation means divide by multiplier to get to 12°C baseline
+        t_corr_final = t_corr_pente / mult_temp_ref if mult_temp_ref != 0 else t_corr_pente
 
         t_corr_hms = seconds_to_hms(t_corr_final)
 
@@ -490,19 +521,12 @@ def run_prediction_df(distance_cible_km,
                       local_k_up=1.040, local_k_down=0.996,
                       local_k_temp_hot=0.002, local_k_temp_cold=0.002, local_opt_temp=12.0,
                       local_fatigue_rate=0.0):
-    """
-    Calcule et renvoie DataFrame km-par-km et métadonnées.
-    Si objective_time_hms est fourni, on applique d'abord les effets par segment
-    puis on SCALE pour que la somme des segments = temps objectif (donc total forcé exact).
-    """
     if not points or len(points) < 2:
         raise ValueError("GPX invalide ou trop court.")
 
-    # distance/cum dists robustes
     total_m, dists, method_used, debug = compute_total_and_cumdist(points)
     distance_gpx_km = total_m / 1000.0
 
-    # sécurité distance cible
     if not distance_cible_km or distance_cible_km <= 0:
         distance_cible_km = distance_gpx_km
 
@@ -512,12 +536,10 @@ def run_prediction_df(distance_cible_km,
 
     elev_list = np.asarray([p.elevation or 0 for p in points])
     if len(dists_corr) != len(elev_list):
-        # resample elev_list to len(dists_corr) via simple interp
         xs = np.linspace(0, total_m, len(elev_list))
         new_x = np.linspace(0, total_m, len(dists_corr))
         elev_list = np.interp(new_x, xs, elev_list)
 
-    # préparer références (recalées si historique demandé)
     center_lat = np.mean([p.latitude for p in points])
     center_lon = np.mean([p.longitude for p in points])
     min_ref_date = None; max_ref_date = date_course_local
@@ -538,7 +560,6 @@ def run_prediction_df(distance_cible_km,
     except Exception:
         hourly_temps_cache = {}
 
-    # recalibration météo pour refs si demandé
     refs_for_fit = []
     if use_hist_for_refs_local and hourly_temps_cache:
         for r in refs_input:
@@ -556,10 +577,8 @@ def run_prediction_df(distance_cible_km,
     else:
         refs_for_fit = [r.copy() for r in refs_input]
 
-    # Fit log-log
     a, K = fit_loglog_model(refs_for_fit, k_up=(local_k_up if apply_elev else 1.0), k_down=(local_k_down if apply_elev else 1.0))
 
-    # If objective_time_hms provided we still compute 'a' from objective to get target flat pace (but we'll scale segments afterwards)
     if objective_time_hms:
         try:
             a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
@@ -570,13 +589,11 @@ def run_prediction_df(distance_cible_km,
     base_flat_total = predict_time_flat(distance_cible_m, (a_override if objective_time_hms else a), K)
     base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
 
-    # km marks (entiers) + dernier segment fractionnaire si besoin
     km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
     last_seg = total_corr - (int(total_corr // 1000) * 1000)
     if last_seg > 1e-6:
         km_marks.append(total_corr)
 
-    # PRE-CALC: créer la liste des segments et leurs t_km pré-ajustés (avant éventuelle mise à l'échelle objective)
     segment_infos = []
     cum_time_temp = 0.0
     dt_depart = datetime.combine(date_course_local, heure_course_local)
@@ -586,22 +603,17 @@ def run_prediction_df(distance_cible_km,
         d_up = max(0.0, e_cur - e_prev)
         d_down = max(0.0, e_prev - e_cur)
 
-        # temps plat sur ce segment (base flat per km) - if last seg is shorter, scale by length
         seg_length_m = 1000.0 if (i < len(km_marks) - 1 or last_seg < 1e-6) else (d - km_marks[-2] if len(km_marks) >= 2 else d)
-        # If the segment is fractional, base_s_per_km_flat must be scaled to segment length:
         t_km_flat = base_s_per_km_flat * (seg_length_m / 1000.0)
 
-        # apply elevation
         t_km_after_elev = apply_elevation_gradient_route(t_km_flat, d_up, d_down, segment_length_m=seg_length_m, k_up=local_k_up, k_down=local_k_down) if apply_elev else t_km_flat
 
-        # apply fatigue (progression uses d / total_corr)
         if apply_fatigue and local_fatigue_rate > 0 and total_corr > 0:
             progression = d / total_corr
             t_km_after_fatigue = t_km_after_elev * (1.0 + (local_fatigue_rate / 100.0) * progression)
         else:
             t_km_after_fatigue = t_km_after_elev
 
-        # temperature at passage (mid-segment time using cum_time_temp)
         passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_km_after_fatigue / 2.0)
         temp_at_passage = get_temp_for_datetime(hourly_temps_cache, passage_dt)
         if apply_temp and temp_at_passage is not None:
@@ -611,7 +623,6 @@ def run_prediction_df(distance_cible_km,
             mult_temp = 1.0
             t_km_after_temp = t_km_after_fatigue
 
-        # append info (raw segment time before any global scaling)
         segment_infos.append({
             "idx": i,
             "d": d,
@@ -625,7 +636,6 @@ def run_prediction_df(distance_cible_km,
 
         cum_time_temp += t_km_after_temp
 
-    # If objective_time_hms provided -> scale segments so sum == objective_seconds
     if objective_time_hms:
         objective_seconds = hms_to_seconds(objective_time_hms)
         sum_raw = sum(s["t_raw"] for s in segment_infos)
@@ -636,13 +646,11 @@ def run_prediction_df(distance_cible_km,
     else:
         scale = 1.0
 
-    # Now build results with scaled times and cumulative
     results = []
     cum_time = 0.0
     for seg in segment_infos:
         t_km = seg["t_raw"] * scale
         cum_time += t_km
-        # compute display pace per km (normalize to per 1000m)
         pace_per_km = (t_km / seg["seg_length_m"]) * 1000.0 if seg["seg_length_m"] > 0 else t_km
         results.append({
             "Km": seg["idx"] + 1 if seg["seg_length_m"] >= 1000 - 1e-6 else f"{seg['idx']+1} ({seg['seg_length_m']:.0f}m)",

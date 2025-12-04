@@ -19,10 +19,9 @@ st.set_page_config(page_title="Prédiction course route", layout="wide")
 st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + TCX + Météo + Fatigue linéaire) — Route")
 
 # -------------------------
-# UTILITAIRES GÉNÉRAUX
+# UTILITAIRES
 # -------------------------
 def hms_to_seconds(hms: str) -> int:
-    """Convertit 'H:M:S' (ou 'HH:MM:SS') en secondes. Retourne 0 si invalide."""
     if hms is None:
         return 0
     try:
@@ -108,7 +107,6 @@ def parse_fit(file):
         times = []
         for msg in fit.get_messages("record"):
             data = {d.name: d.value for d in msg}
-            # attention aux clés possibles, robustesse
             if data.get("position_lat") is not None and data.get("position_long") is not None:
                 lat = data["position_lat"] * (180 / 2**31)
                 lon = data["position_long"] * (180 / 2**31)
@@ -137,7 +135,7 @@ def parse_tcx(file):
         file.seek(0)
         data = file.read()
         root = ET.fromstring(data)
-    except Exception as e:
+    except Exception:
         return None
 
     trackpoints = root.findall('.//{*}Trackpoint')

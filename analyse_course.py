@@ -167,7 +167,6 @@ def parse_tcx(file):
     }
 
 # ---------------- Session helpers ----------------
-# ---------------- Session helpers (sécurisé) ----------------
 def update_ref_session(i, dist, temps, dup, ddn):
     st.session_state[f"dist_{i}"] = float(dist or 0.0)
     st.session_state[f"temps_{i}"] = str(temps or "00:00:00")
@@ -196,10 +195,26 @@ def update_ref_session(i, dist, temps, dup, ddn):
 
 # ---------------- Placeholders / Functions manquantes ----------------
 def compute_total_and_cumdist(points):
-@@ -258,450 +274,461 @@
-        file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
-        if file_in:
-            name = getattr(file_in, "name", "") or ""
+    """
+    Calcule la distance cumulée à partir d'une liste de SimplePoint.
+    Retourne :
+        total_m : distance totale en mètres
+        cumdists : liste des distances cumulées
+        method_used : str, méthode utilisée
+        debug : dict, infos debug
+    """
+    if not points or len(points) < 2:
+        return 0.0, [], "none", {}
+
+    cumdists = [0.0]
+    total = 0.0
+    for i in range(1, len(points)):
+        d = points[i].distance_3d(points[i-1])
+        total += d
+        cumdists.append(total)
+
+    return total, cumdists, "3D-haversine", {"n_points": len(points)}
+
             # --- FIT ---
             if name.lower().endswith(".fit"):
                 data_fit = parse_fit(file_in)

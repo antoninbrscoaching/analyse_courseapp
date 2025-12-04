@@ -168,11 +168,7 @@ def parse_tcx(file):
 
 # ---------------- Session helpers sécurisés ----------------
 def update_ref_session(i, dist, temps, dup, ddn):
-    """Met à jour st.session_state de manière sécurisée pour éviter StreamlitAPIException"""
-    st.session_state[f"dist_{i}"] = float(dist) if dist not in [None, np.nan] else 0.0
-    st.session_state[f"temps_{i}"] = str(temps) if temps else "00:00:00"
-    st.session_state[f"dup_{i}"] = float(dup) if dup not in [None, np.nan] else 0.0
-    st.session_state[f"ddn_{i}"] = float(ddn) if ddn not in [None, np.nan] else 0.0
+    """Met à jour st.session_state de manière sécurisée pour éviter les erreurs Streamlit"""
     def safe_float(val):
         try:
             if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):

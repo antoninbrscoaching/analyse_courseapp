@@ -167,24 +167,26 @@ def parse_tcx(file):
     }
 
 # ---------------- Session helpers sécurisés ----------------
-def update_ref_session(i, dist, temps, dup, ddn):
-    """Met à jour st.session_state de manière sécurisée pour éviter StreamlitAPIException"""
-    def safe_float(val):
-        try:
-            if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
-                return 0.0
-            return float(val)
-        except Exception:
+def safe_float(val):
+    """Convertit en float, retourne 0.0 si invalide."""
+    try:
+        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
             return 0.0
+        return float(val)
+    except Exception:
+        return 0.0
 
-    def safe_str(val):
-        try:
-            if val is None:
-                return "00:00:00"
-            return str(val)
-        except Exception:
+def safe_str(val):
+    """Convertit en string, retourne '00:00:00' si invalide."""
+    try:
+        if val is None or val == "":
             return "00:00:00"
+        return str(val)
+    except Exception:
+        return "00:00:00"
 
+def update_ref_session(i, dist=None, temps=None, dup=None, ddn=None):
+    """Met à jour st.session_state de manière sécurisée pour éviter StreamlitAPIException"""
     st.session_state[f"dist_{i}"] = safe_float(dist)
     st.session_state[f"temps_{i}"] = safe_str(temps)
     st.session_state[f"dup_{i}"] = safe_float(dup)

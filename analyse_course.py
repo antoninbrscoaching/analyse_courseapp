@@ -243,11 +243,16 @@ if gpx_file:
     except Exception:
         st.session_state["gpx_original_distance_km"] = None
 
+# ------------------------------------------------------
+# 2️⃣ Courses de référence (manuel ou FIT/TCX) avec recalibrage complet
+# ------------------------------------------------------
+
 st.header("2️⃣ Courses de référence (manuel ou FIT/TCX)")
+
 if "n_refs" not in st.session_state:
     st.session_state.n_refs = 3
 
-cols = st.columns([1,1])
+cols = st.columns([1, 1])
 with cols[0]:
     if st.button("➕ Ajouter (max 6)") and st.session_state.n_refs < 6:
         st.session_state.n_refs += 1
@@ -255,10 +260,24 @@ with cols[1]:
     if st.button("➖ Retirer") and st.session_state.n_refs > 1:
         st.session_state.n_refs -= 1
 
+# --- Fonction de recalibrage
+def recalibrate_time(temps_hms, D_up, D_down, distance_m, temp_ideal=12.0):
+    """Recalibre le temps par rapport à pente 0% et température idéale"""
+    secs = hms_to_seconds(temps_hms)
+    # Correction pente → 0%
+    secs_flat = apply_elevation_gradient_route(secs, D_up, D_down, distance_m, k_up=1.04, k_down=0.996)
+    # Correction température → idéal
+    mult_temp = temp_multiplier_nonlin(temp_ideal, opt_temp=temp_ideal)
+    secs_flat_temp = secs_flat / mult_temp if mult_temp != 0 else secs_flat
+    return secs_flat_temp
+
 refs = []
+
 for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
+    
+    # Checkbox import FIT/TCX
     with c1:
         use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
 
@@ -267,51 +286,56 @@ for i in range(1, st.session_state.n_refs + 1):
     default_dup = st.session_state.get(f"dup_{i}", 0.0)
     default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
 
-    # --- Parsing FIT/TCX ---
-    dist_f = dup_f = ddn_f = None
-    temps_f = None
-    file_in = None
+    # Inputs utilisateur
+    with c2:
+        dist = st.number_input(f"Dist {i} (m)", value=default_dist, key=f"dist_{i}")
+    with c3:
+        temps = st.text_input(f"Temps {i} (h:mm:ss)", value=default_temps, key=f"temps_{i}")
+    with c4:
+        dup = st.number_input(f"D+ {i}", value=default_dup, key=f"dup_{i}")
+    with c5:
+        ddn = st.number_input(f"D- {i}", value=default_ddn, key=f"ddn_{i}")
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
 
+    # --- Parsing FIT/TCX ---
     if file_in:
         name = getattr(file_in, "name", "") or ""
         try:
             if name.lower().endswith(".fit"):
                 data_fit = parse_fit(file_in)
                 if data_fit:
-                    dist_f = data_fit.get("distance", None)
-                    dup_f = data_fit.get("D_up", None)
-                    ddn_f = data_fit.get("D_down", None)
-                    temps_f = data_fit.get("duration_hms", None)
+                    dist = data_fit.get("distance", dist)
+                    dup = data_fit.get("D_up", dup)
+                    ddn = data_fit.get("D_down", ddn)
+                    temps = data_fit.get("duration_hms", temps)
             elif name.lower().endswith(".tcx"):
                 tcx_res = parse_tcx(file_in)
                 if tcx_res:
-                    dist_f = int(round(tcx_res.get("distance",0)))
-                    dup_f = int(round(tcx_res.get("D_up",0)))
-                    ddn_f = int(round(tcx_res.get("D_down",0)))
-                    temps_f = tcx_res.get("duration_hms")
+                    dist = int(round(tcx_res.get("distance", dist)))
+                    dup = int(round(tcx_res.get("D_up", dup)))
+                    ddn = int(round(tcx_res.get("D_down", ddn)))
+                    temps = tcx_res.get("duration_hms", temps)
         except Exception:
             pass
 
-    # --- Mise à jour sécurisée avant widgets ---
-    update_ref_session_safe(i, dist_f, temps_f, dup_f, ddn_f)
+    # Mise à jour sécurisée
+    update_ref_session_safe(i, dist, temps, dup, ddn)
 
-    with c2:
-        dist = st.number_input(f"Dist {i} (m)", value=st.session_state.get(f"dist_{i}", default_dist), key=f"dist_{i}")
-    with c3:
-        temps = st.text_input(f"Temps {i} (h:mm:ss)", value=st.session_state.get(f"temps_{i}", default_temps), key=f"temps_{i}")
-    with c4:
-        dup = st.number_input(f"D+ {i}", value=st.session_state.get(f"dup_{i}", default_dup), key=f"dup_{i}")
-    with c5:
-        ddn = st.number_input(f"D- {i}", value=st.session_state.get(f"ddn_{i}", default_ddn), key=f"ddn_{i}")
+    # --- recalibrage 0% pente & 12°C ---
+    recal_secs = recalibrate_time(temps, dup, ddn, dist, temp_ideal=12.0)
+    recal_hms = seconds_to_hms(recal_secs)
 
     refs.append({
-        "distance": float(st.session_state.get(f"dist_{i}", dist or 0.0)),
-        "temps": str(st.session_state.get(f"temps_{i}", temps or "00:00:00")),
-        "D_up": float(st.session_state.get(f"dup_{i}", dup or 0.0)),
-        "D_down": float(st.session_state.get(f"ddn_{i}", ddn or 0.0))
+        "distance": float(dist),
+        "temps": str(temps),
+        "D_up": float(dup),
+        "D_down": float(ddn),
+        "temps_recal": recal_secs,
+        "temps_recal_hms": recal_hms
     })
+
+    st.markdown(f"Temps brut : `{temps}` | Temps recalibré (0% & 12°C) : `{recal_hms}`")
 
 # ==============================================================
 # TEMPS CORRIGÉS 0% & 12°C POUR TOUTES LES RÉFÉRENCES IMPORTÉES

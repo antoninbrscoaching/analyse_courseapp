@@ -167,32 +167,62 @@ def parse_tcx(file):
     }
 
 # ---------------- Session helpers sécurisés ----------------
+
 def safe_float(val):
+    """Convertit proprement une valeur vers float."""
     try:
-        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+        if val is None:
+            return 0.0
+        if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
             return 0.0
         return float(val)
-    except Exception:
+    except:
         return 0.0
 
+
 def safe_str(val):
+    """Convertit proprement une valeur vers string (h:mm:ss)."""
     try:
         if val is None:
             return "00:00:00"
-        return str(val)
-    except Exception:
+        s = str(val).strip()
+        if s == "":
+            return "00:00:00"
+        return s
+    except:
         return "00:00:00"
 
+
+def safe_set(key, value):
+    """
+    Wrapper pour protéger Streamlit contre les valeurs interdites.
+    Streamlit ne permet PAS : NaN, inf, objets non-sérialisables.
+    """
+    # Correction systématique
+    if isinstance(value, float):
+        if np.isnan(value) or np.isinf(value):
+            value = 0.0
+
+    if value is None:
+        value = 0.0 if key.startswith(("dist_", "dup_", "ddn_")) else "00:00:00"
+
+    # Mise à jour finale
+    st.session_state[key] = value
+
+
 def update_ref_session_safe(i, dist=None, temps=None, dup=None, ddn=None):
-    """Met à jour session_state de manière sécurisée"""
+    """Met à jour session_state avec filtrage sécurisé."""
     if dist is not None:
-        st.session_state[f"dist_{i}"] = safe_float(dist)
+        safe_set(f"dist_{i}", safe_float(dist))
+
     if temps is not None:
-        st.session_state[f"temps_{i}"] = safe_str(temps)
+        safe_set(f"temps_{i}", safe_str(temps))
+
     if dup is not None:
-        st.session_state[f"dup_{i}"] = safe_float(dup)
+        safe_set(f"dup_{i}", safe_float(dup))
+
     if ddn is not None:
-        st.session_state[f"ddn_{i}"] = safe_float(ddn)
+        safe_set(f"ddn_{i}", safe_float(ddn))
 
 # ---------------- Fonctions manquantes / placeholders ----------------
 def compute_total_and_cumdist(points):

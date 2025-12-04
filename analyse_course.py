@@ -166,33 +166,15 @@ def parse_tcx(file):
         "duration_hms": duration_hms
     }
 
-# ---------------- Session helpers (sécurisé) ----------------
+# ---------------- Session helpers sécurisés ----------------
 def update_ref_session(i, dist, temps, dup, ddn):
-    """Met à jour st.session_state de manière sécurisée (corrige les erreurs)"""
-    if "session_state" not in st.__dict__:
-        return
-    # Assure que la valeur existe et est valide
-    try:
-        st.session_state[f"dist_{i}"] = float(dist) if dist not in [None, np.nan] else 0.0
-    except Exception:
-        st.session_state[f"dist_{i}"] = 0.0
+    """Met à jour st.session_state de manière sécurisée pour éviter StreamlitAPIException"""
+    st.session_state[f"dist_{i}"] = float(dist) if dist not in [None, np.nan] else 0.0
+    st.session_state[f"temps_{i}"] = str(temps) if temps else "00:00:00"
+    st.session_state[f"dup_{i}"] = float(dup) if dup not in [None, np.nan] else 0.0
+    st.session_state[f"ddn_{i}"] = float(ddn) if ddn not in [None, np.nan] else 0.0
 
-    try:
-        st.session_state[f"temps_{i}"] = str(temps) if temps else "00:00:00"
-    except Exception:
-        st.session_state[f"temps_{i}"] = "00:00:00"
-
-    try:
-        st.session_state[f"dup_{i}"] = float(dup) if dup not in [None, np.nan] else 0.0
-    except Exception:
-        st.session_state[f"dup_{i}"] = 0.0
-
-    try:
-        st.session_state[f"ddn_{i}"] = float(ddn) if ddn not in [None, np.nan] else 0.0
-    except Exception:
-        st.session_state[f"ddn_{i}"] = 0.0
-
-# ---------------- Placeholders / Functions manquantes ----------------
+# ---------------- Fonctions manquantes / placeholders ----------------
 def compute_total_and_cumdist(points):
     cumdists = [0.0]
     total = 0.0
@@ -210,16 +192,13 @@ def apply_elevation_gradient_route(time_flat_s, d_up_m, d_down_m, segment_length
 
 def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
     diff = temp - opt_temp
-    if diff > 0:
-        return 1.0 + k_hot * diff
-    else:
-        return 1.0 + k_cold * diff
+    return 1.0 + (k_hot*diff if diff>0 else k_cold*diff)
 
 def fit_loglog_model(refs, k_up=1.04, k_down=0.996):
     return 1.0, 1.0
 
 def predict_time_flat(distance_m, a, K):
-    return distance_m / 3.0  # placeholder vitesse 3 m/s
+    return distance_m / 3.0
 
 def override_with_objective(distance_m, objective_time_hms, K):
     return 1.0

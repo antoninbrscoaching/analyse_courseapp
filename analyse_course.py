@@ -216,14 +216,26 @@ def safe_str(val):
 
 def safe_set(key, value):
     """
-    Wrapper pour protéger Streamlit lors de l'écriture dans session_state.
-    Streamlit session_state interdit NaN/inf et objets non sérialisables.
-    Cette fonction transforme et écrit uniquement des types simples.
+    Empêche absolument NaN / Inf / None dans session_state.
     """
-    # Normaliser floats
+    # Convertir floats invalides
     if isinstance(value, float):
         if np.isnan(value) or np.isinf(value):
             value = 0.0
+
+    # None est interdit
+    if value is None:
+        if key.startswith(("dist_", "dup_", "ddn_")):
+            value = 0.0
+        else:
+            value = "00:00:00"
+
+    # Chaînes vide interdites pour les temps
+    if isinstance(value, str) and value.strip() == "":
+        value = "00:00:00"
+
+    # OK — stockage
+    st.session_state[key] = value
 
     # Normaliser None
     if value is None:
@@ -240,14 +252,38 @@ def safe_set(key, value):
         # fallback: stringify
         st.session_state[key] = str(value)
 
+# --- Nettoyage impératif avant session_state ---
+def clean_value(v):
+    try:
+        if v is None:
+            return 0.0
+        if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+            return 0.0
+        if isinstance(v, str):
+            s = v.strip()
+            if s == "" or s.lower() in ["nan", "none"]:
+                return "00:00:00"
+        return v
+    except:
+        return 0.0
+
+dist_f = clean_value(dist_f)
+temps_f = clean_value(temps_f)
+dup_f = clean_value(dup_f)
+ddn_f = clean_value(ddn_f)
+
 def update_ref_session_safe(i, dist=None, temps=None, dup=None, ddn=None):
-    """Met à jour st.session_state de manière sûre; n'écrit que si non-None"""
+    """Met à jour session_state avec filtrage sécurisé."""
     if dist is not None:
         safe_set(f"dist_{i}", safe_float(dist))
+
     if temps is not None:
+        # Le temps doit être une chaîne propre
         safe_set(f"temps_{i}", safe_str(temps))
+
     if dup is not None:
         safe_set(f"dup_{i}", safe_float(dup))
+
     if ddn is not None:
         safe_set(f"ddn_{i}", safe_float(ddn))
 

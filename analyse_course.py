@@ -167,24 +167,24 @@ def parse_tcx(file):
     }
 
 # ---------------- Session helpers sécurisés ----------------
-def update_ref_session(i, dist, temps, dup, ddn):
-    """Met à jour st.session_state de manière sécurisée pour éviter les erreurs Streamlit"""
-    def safe_float(val):
-        try:
-            if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
-                return 0.0
-            return float(val)
-        except Exception:
+def safe_float(val):
+    try:
+        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
             return 0.0
+        return float(val)
+    except Exception:
+        return 0.0
 
-    def safe_str(val):
-        try:
-            if val is None:
-                return "00:00:00"
-            return str(val)
-        except Exception:
+def safe_str(val):
+    try:
+        if val is None:
             return "00:00:00"
+        return str(val)
+    except Exception:
+        return "00:00:00"
 
+def update_ref_session_safe(i, dist, temps, dup, ddn):
+    """Met à jour session_state après le rendu des widgets"""
     st.session_state[f"dist_{i}"] = safe_float(dist)
     st.session_state[f"temps_{i}"] = safe_str(temps)
     st.session_state[f"dup_{i}"] = safe_float(dup)
@@ -226,7 +226,9 @@ def get_temp_for_datetime(hourly_temps_cache, dt):
 def fetch_open_meteo_hourly(lat, lon, start_iso, end_iso):
     return {}
 
-# ---------------- UI & Inputs ----------------
+# ------------------------------------------------------
+# ------------------ UI & Inputs -----------------------
+# ------------------------------------------------------
 st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
 if gpx_file:
@@ -268,65 +270,39 @@ for i in range(1, st.session_state.n_refs + 1):
         ddn = st.number_input(f"D- {i}", value=default_ddn, key=f"ddn_{i}")
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
-        if file_in:
-            name = getattr(file_in, "name", "") or ""
-            dist_f = dup_f = ddn_f = None
-            temps_f = None
-            try:
-                # --- FIT ---
-                if name.lower().endswith(".fit"):
-                    data_fit = parse_fit(file_in)
-                    if data_fit:
-                        dist_f = data_fit.get("distance", 0)
-                        dup_f = data_fit.get("D_up", 0)
-                        ddn_f = data_fit.get("D_down", 0)
-                        temps_f = data_fit.get("duration_hms")
-                        if not temps_f:
-                            st.warning(f"Aucune durée détectée pour FIT Réf {i}, saisie min/max requise :")
-                            col_min, col_max = st.columns(2)
-                            with col_min:
-                                mins_input = st.number_input(f"Temps min (min) FIT réf {i}", min_value=1, value=20, key=f"min_temps_{i}")
-                            with col_max:
-                                maxs_input = st.number_input(f"Temps max (min) FIT réf {i}", min_value=1, value=40, key=f"max_temps_{i}")
-                            temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
-                        st.info(f"✔ FIT détecté : {dist_f}m | D+ {dup_f} | D- {ddn_f} | dur: {temps_f}")
-                    else:
-                        st.warning(f"Fichier FIT Réf {i} non exploitable.")
 
-                # --- TCX ---
-                elif name.lower().endswith(".tcx"):
-                    tcx_res = parse_tcx(file_in)
-                    if tcx_res:
-                        dist_f = int(round(tcx_res.get("distance",0)))
-                        dup_f = int(round(tcx_res.get("D_up",0)))
-                        ddn_f = int(round(tcx_res.get("D_down",0)))
-                        temps_f = tcx_res.get("duration_hms")
-                        if not temps_f:
-                            st.warning(f"Aucune durée détectée pour TCX Réf {i}, saisie min/max requise :")
-                            col_min, col_max = st.columns(2)
-                            with col_min:
-                                mins_input = st.number_input(f"Temps min (min) TCX réf {i}", min_value=1, value=20, key=f"min_temps_tcx_{i}")
-                            with col_max:
-                                maxs_input = st.number_input(f"Temps max (min) TCX réf {i}", min_value=1, value=40, key=f"max_temps_tcx_{i}")
-                            temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
-                        st.info(f"✔ TCX détecté : {dist_f}m | D+ {dup_f} | D- {ddn_f} | dur: {temps_f}")
-                    else:
-                        st.warning(f"Fichier TCX Réf {i} non exploitable.")
+    # --- Parsing FIT/TCX ---
+    dist_f = dup_f = ddn_f = None
+    temps_f = None
+    if file_in:
+        name = getattr(file_in, "name", "") or ""
+        try:
+            if name.lower().endswith(".fit"):
+                data_fit = parse_fit(file_in)
+                if data_fit:
+                    dist_f = data_fit.get("distance", 0)
+                    dup_f = data_fit.get("D_up", 0)
+                    ddn_f = data_fit.get("D_down", 0)
+                    temps_f = data_fit.get("duration_hms")
+            elif name.lower().endswith(".tcx"):
+                tcx_res = parse_tcx(file_in)
+                if tcx_res:
+                    dist_f = int(round(tcx_res.get("distance",0)))
+                    dup_f = int(round(tcx_res.get("D_up",0)))
+                    ddn_f = int(round(tcx_res.get("D_down",0)))
+                    temps_f = tcx_res.get("duration_hms")
+        except Exception:
+            pass
 
-            except Exception as e:
-                st.error(f"Erreur lors du parsing fichier Réf {i} : {e}")
-
-            # Met à jour session_state sécurisée
-            update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
-
-            # Met à jour les variables locales pour l'UI
-            dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
-            dist, dup, ddn, temps = (
-                st.session_state.get(f"dist_{i}", dist or 0.0),
-                st.session_state.get(f"dup_{i}", dup or 0.0),
-                st.session_state.get(f"ddn_{i}", ddn or 0.0),
-                st.session_state.get(f"temps_{i}", temps or "00:00:00")
-            )
+    # --- Mise à jour sécurisée après rendu des widgets ---
+    if any(v is not None for v in [dist_f, temps_f, dup_f, ddn_f]):
+        update_ref_session_safe(i, dist_f, temps_f, dup_f, ddn_f)
+        dist, dup, ddn, temps = (
+            st.session_state.get(f"dist_{i}", dist or 0.0),
+            st.session_state.get(f"dup_{i}", dup or 0.0),
+            st.session_state.get(f"ddn_{i}", ddn or 0.0),
+            st.session_state.get(f"temps_{i}", temps or "00:00:00")
+        )
 
     refs.append({
         "distance": float(st.session_state.get(f"dist_{i}", dist or 0.0)),

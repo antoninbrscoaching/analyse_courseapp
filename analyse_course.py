@@ -407,6 +407,8 @@ with col2:
 
 if use_hist_refs:
     st.markdown("**Dates/Heures pour les références**")
+
+    # 1) collecte des dates/heures saisies par l'utilisateur
     for idx, r in enumerate(refs):
         cA, cB = st.columns(2)
         with cA:
@@ -414,6 +416,94 @@ if use_hist_refs:
         with cB:
             ref_time = st.time_input(f"Heure référence #{idx+1}", key=f"ref_time_{idx}", value=time(9, 0))
         refs[idx]["ref_datetime"] = datetime.combine(ref_date, ref_time)
+
+    # Cherche plage historique min/max
+    min_ref_date = None
+    max_ref_date = date_course
+    for r in refs:
+        rd = r.get("ref_datetime")
+        if rd:
+            d = rd.date()
+            if min_ref_date is None or d < min_ref_date:
+                min_ref_date = d
+            if d > max_ref_date:
+                max_ref_date = d
+    if min_ref_date is None:
+        min_ref_date = date_course
+
+    # Chargement meteo historique
+    try:
+        hourly_temps_cache = fetch_historical_range(lat_input, lon_input, min_ref_date, max_ref_date)
+    except Exception:
+        hourly_temps_cache = {}
+
+    # --- Ajout : récupération du D+ / D- de la référence (via entrée user OU GPX)
+    def compute_ref_slope(r):
+        # Cas GPX dans la référence
+        if r.get("ref_distance_km") and r.get("ref_altitude_gain"):
+            d_km = r["ref_distance_km"]
+            up = r["ref_altitude_gain"]
+            down = r.get("ref_altitude_loss", 0)
+            # pente moyenne pondérée
+            slope = ((up - down) / (d_km*1000)) * 100
+        else:
+            slope = 0
+        return slope
+
+    # 3) correction complète (temp + pente)
+    for idx, r in enumerate(refs):
+
+        rd = r.get("ref_datetime")
+        key = f"temps_{idx+1}"
+        temps_brut_hms = st.session_state.get(key, r.get("temps", "00:00:00"))
+        secs_brut = hms_to_seconds(temps_brut_hms)
+
+        if secs_brut == 0:
+            continue
+
+        # ---------- Correction TEMPÉRATURE ----------
+        try:
+            t_ref = get_temp_for_datetime(hourly_temps_cache, rd)
+        except:
+            t_ref = 12.0  # fallback = aucune correction
+
+        if use_temp_coeff:
+            mult_temp = temp_multiplier_nonlin(
+                t_ref,
+                opt_temp=opt_temp,
+                k_hot=k_temp_hot,
+                k_cold=k_temp_cold
+            )
+        else:
+            mult_temp = 1.0
+
+        secs_corr_temp = secs_brut / mult_temp
+
+        # ---------- Correction PENTE ----------
+        slope_ref = compute_ref_slope(r)
+
+        if use_slope_coeff:
+            mult_slope = pente_multiplier_nonlin(
+                slope_ref,
+                k_up=k_grade_up,
+                k_down=k_grade_down
+            )
+        else:
+            mult_slope = 1.0
+
+        secs_corr_full = secs_corr_temp / mult_slope
+
+        temps_std = seconds_to_hms(secs_corr_full)
+
+        # Mise à jour session + structure
+        st.session_state[key] = temps_std
+        refs[idx]["temps_standardise"] = temps_std
+        refs[idx]["_temp_ref"] = t_ref
+        refs[idx]["_slope_ref"] = slope_ref
+
+        st.success(
+            f"Réf #{idx+1} — Temp réelle: {t_ref}°C, pente: {slope_ref:.2f}% → Temps standardisé (12°C & pancake) : `{temps_std}`"
+        )
 
 st.header("3️⃣ bis. Fatigue linéaire")
 fatigue_active = st.checkbox("Activer fatigue ?", value=False)

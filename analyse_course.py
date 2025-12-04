@@ -19,7 +19,7 @@ st.set_page_config(page_title="Prédiction course route", layout="wide")
 st.title("🏃‍♂️ Analyse & Prédiction de course (GPX + FIT + TCX + Météo + Fatigue linéaire) — Route")
 
 # -------------------------
-# UTILITAIRES
+# UTILS
 # -------------------------
 def hms_to_seconds(hms: str) -> int:
     if hms is None:
@@ -185,34 +185,31 @@ def parse_tcx(file):
         "duration_hms": duration_hms
     }
 
-# ---------------- Session helpers sécurisés (REMPLACER L'ANCIEN BLOC) ----------------
-
+# -------------------------
+# SAFE / SESSION HELPERS
+# -------------------------
 def safe_float(val):
-    """Convertit proprement une valeur vers float (garantit un float valide)."""
     try:
         if val is None:
             return 0.0
-        # si c'est une string numérique, tenter la conversion
         if isinstance(val, str):
             s = val.strip()
             if s == "" or s.lower() in ("nan", "none"):
                 return 0.0
             return float(s.replace(",", "."))
-        # floats invalides
-        if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
-            return 0.0
+        if isinstance(val, (float, int, np.number)):
+            if np.isnan(val) or np.isinf(val):
+                return 0.0
+            return float(val)
         return float(val)
     except Exception:
         return 0.0
 
-
 def safe_str(val):
-    """Convertit proprement une valeur vers string (format h:mm:ss attendu)."""
     try:
         if val is None:
             return "00:00:00"
-        # si c'est un nombre de secondes, transformer en h:m:s
-        if isinstance(val, (int, float)) and not np.isnan(val) and not np.isinf(val):
+        if isinstance(val, (int, float, np.number)):
             return seconds_to_hms(float(val))
         s = str(val).strip()
         if s == "" or s.lower() in ("nan", "none"):
@@ -221,208 +218,56 @@ def safe_str(val):
     except Exception:
         return "00:00:00"
 
-
 def safe_set(key, value):
-    """
-    Wrapper pour protéger Streamlit contre les valeurs interdites.
-    Ne laisse jamais None / NaN / Inf / chaîne vide dans session_state.
-    """
-    # Normaliser floats
-    if isinstance(value, float):
-        if np.isnan(value) or np.isinf(value):
+    try:
+        if key is None or str(key).strip() == "":
+            st.warning(f"Impossible de définir session_state : clé invalide ({key})")
+            return
+        if isinstance(value, (float, int, np.number)):
+            if np.isnan(value) or np.isinf(value):
+                value = 0.0
+        if value is None:
             value = 0.0
-
-    # None interdit -> valeur par défaut selon le key
-    if value is None:
-        if key.startswith(("dist_", "dup_", "ddn_")):
-            value = 0.0
-        else:
+        if isinstance(value, str) and value.strip() == "":
             value = "00:00:00"
+        st.session_state[key] = value
+    except Exception as e:
+        st.warning(f"Impossible de définir session_state[{key}] : {e}")
 
-    # Chaînes vides interdites pour les temps
-    if isinstance(value, str) and value.strip() == "":
-        value = "00:00:00"
-
-    # Assurer type cohérent pour distance/alt
-    if key.startswith(("dist_", "dup_", "ddn_")):
-        try:
-            value = float(value)
-        except Exception:
-            value = 0.0
-
-    st.session_state[key] = value
-
+def update_ref_session_safe(i, dist=None, temps=None, dup=None, ddn=None):
+    if dist is not None:
+        safe_set(f"dist_{i}", safe_float(dist))
+    if temps is not None:
+        safe_set(f"temps_{i}", safe_str(temps))
+    if dup is not None:
+        safe_set(f"dup_{i}", safe_float(dup))
+    if ddn is not None:
+        safe_set(f"ddn_{i}", safe_float(ddn))
 
 def clean_value(v):
-    """
-    Nettoyage léger pour les valeurs extraites des fichiers avant mise à jour.
-    Retourne soit float (pour distances/alt) soit string (pour temps).
-    - None -> 0.0 ou '00:00:00' selon le type détecté en aval.
-    - strings vides -> '00:00:00'
-    - strings numériques -> float
-    """
     try:
         if v is None:
             return None
-        if isinstance(v, (int, float)):
-            # normaliser les floats mauvais
-            if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+        if isinstance(v, (int, float, np.number)):
+            if np.isnan(v) or np.isinf(v):
                 return 0.0
             return v
         if isinstance(v, str):
             s = v.strip()
             if s == "" or s.lower() in ("none", "nan"):
                 return None
-            # heuristique : si la chaîne contient ':' on suppose un temps
             if ":" in s:
                 return s
-            # tenter conversion numérique
             try:
                 return float(s.replace(",", "."))
             except:
                 return s
-        # autres types -> essayer float
         try:
             return float(v)
         except:
             return str(v)
     except Exception:
         return None
-
-
-def update_ref_session_safe(i, dist=None, temps=None, dup=None, ddn=None):
-    """
-    Met à jour st.session_state avec filtrage sécurisé pour éviter StreamlitAPIException.
-    Appeler toujours après avoir éventuellement nettoyé les valeurs (clean_value).
-    """
-    if dist is not None:
-        # safe_float puis safe_set (garantit float stocké)
-        safe_val = safe_float(dist)
-        safe_set(f"dist_{i}", safe_val)
-
-    if temps is not None:
-        # safe_str puis safe_set (garantit string stocké)
-        safe_t = safe_str(temps)
-        safe_set(f"temps_{i}", safe_t)
-
-    if dup is not None:
-        safe_val = safe_float(dup)
-        safe_set(f"dup_{i}", safe_val)
-
-    if ddn is not None:
-        safe_val = safe_float(ddn)
-        safe_set(f"ddn_{i}", safe_val)
-
-# -------------------------
-# LOGIC: recalibration / small model placeholders
-# -------------------------
-def compute_total_and_cumdist(points):
-    # returns total_m, cumdists(list m), method, debug
-    if not points:
-        return 0.0, [0.0], "none", {}
-    cumdists = [0.0]
-    total = 0.0
-    prev = points[0]
-    for p in points[1:]:
-        d = prev.distance_3d(p)
-        total += d
-        cumdists.append(total)
-        prev = p
-    return total, cumdists, "haversine", {}
-
-def apply_elevation_gradient_route(time_flat_s, d_up_m, d_down_m, segment_length_m, k_up=1.04, k_down=0.996):
-    """
-    Simplified elevation/time adjustment: apply a multiplicative factor based on D+/D- proportion over segment.
-    k_up >1 increases time, k_down <1 reduces time on descents.
-    """
-    try:
-        if segment_length_m <= 0:
-            return time_flat_s
-        # factor from up/down per meter
-        up_factor = (k_up - 1.0) * (d_up_m / max(segment_length_m, 1.0))
-        down_factor = (1.0 - k_down) * (d_down_m / max(segment_length_m, 1.0))
-        factor = 1.0 + up_factor + down_factor
-        return max(time_flat_s * factor, 0.0)
-    except Exception:
-        return time_flat_s
-
-def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
-    """
-    simple linear-ish response: multiplier = 1 + k * (temp - opt) where sign depends on hot/cold
-    """
-    try:
-        diff = temp - opt_temp
-        if diff > 0:
-            return 1.0 + k_hot * diff
-        else:
-            return 1.0 + k_cold * diff
-    except Exception:
-        return 1.0
-
-def fit_loglog_model(refs, k_up=1.04, k_down=0.996):
-    """
-    Placeholder: returns a, K. For now return a fixed baseline (a seconds for 1 km) and K (scaling)
-    In future replace with real fitting (e.g. log-log regressions).
-    """
-    # Use median pace from refs if available
-    paces = []
-    for r in refs:
-        # pick temps_recal (seconds) if exists else temps seconds
-        secs = r.get("temps_recal") or hms_to_seconds(r.get("temps", "0:00:00"))
-        dist_km = r.get("distance", 0) / 1000.0 if r.get("distance") else (r.get("distance_km") or 0)
-        if dist_km and secs:
-            paces.append(secs / dist_km)
-    if paces:
-        median_p = float(np.median(paces))
-    else:
-        median_p = 240.0  # default 4:00/km
-    # a = total flat time for 1 km baseline (seconds)
-    a = median_p
-    K = 1.0
-    return a, K
-
-def predict_time_flat(distance_m, a, K):
-    """
-    Predict flat time (seconds) for distance in meters.
-    a = baseline seconds per km; K unused placeholder.
-    """
-    try:
-        kms = max(distance_m / 1000.0, 0.0001)
-        return a * kms
-    except Exception:
-        return a * (distance_m / 1000.0)
-
-def override_with_objective(distance_m, objective_time_hms, K):
-    """
-    If user forces a time, we can compute an 'a_override' baseline so predict_time_flat uses it.
-    For simplicity, return baseline seconds-per-km (a_override) computed from objective.
-    """
-    try:
-        total_seconds = hms_to_seconds(objective_time_hms)
-        kms = max(distance_m / 1000.0, 0.0001)
-        return total_seconds / kms
-    except Exception:
-        return None
-
-def get_temp_for_datetime(hourly_temps_cache, dt):
-    """
-    hourly_temps_cache is expected to be mapping or placeholder.
-    For now return 12.0 (optimal) if cache empty; else look up by nearest hour (if provided).
-    """
-    if hourly_temps_cache is None or hourly_temps_cache == {}:
-        return 12.0
-    try:
-        # user is not required to provide an actual cache in this minimal example
-        # if cache is dict keyed by ISO strings:
-        key = dt.replace(minute=0, second=0, microsecond=0).isoformat()
-        return hourly_temps_cache.get(key, 12.0)
-    except Exception:
-        return 12.0
-
-@st.cache_data(ttl=60)
-def fetch_open_meteo_hourly(lat, lon, start_iso, end_iso):
-    # placeholder - returning empty dict (user can implement real call)
-    return {}
 
 # -------------------------
 # UI & INPUTS

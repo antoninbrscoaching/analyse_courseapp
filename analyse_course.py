@@ -169,10 +169,26 @@ def parse_tcx(file):
 # ---------------- Session helpers sécurisés ----------------
 def update_ref_session(i, dist, temps, dup, ddn):
     """Met à jour st.session_state de manière sécurisée pour éviter StreamlitAPIException"""
-    st.session_state[f"dist_{i}"] = float(dist) if dist not in [None, np.nan] else 0.0
-    st.session_state[f"temps_{i}"] = str(temps) if temps else "00:00:00"
-    st.session_state[f"dup_{i}"] = float(dup) if dup not in [None, np.nan] else 0.0
-    st.session_state[f"ddn_{i}"] = float(ddn) if ddn not in [None, np.nan] else 0.0
+    def safe_float(val):
+        try:
+            if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+                return 0.0
+            return float(val)
+        except Exception:
+            return 0.0
+
+    def safe_str(val):
+        try:
+            if val is None:
+                return "00:00:00"
+            return str(val)
+        except Exception:
+            return "00:00:00"
+
+    st.session_state[f"dist_{i}"] = safe_float(dist)
+    st.session_state[f"temps_{i}"] = safe_str(temps)
+    st.session_state[f"dup_{i}"] = safe_float(dup)
+    st.session_state[f"ddn_{i}"] = safe_float(ddn)
 
 # ---------------- Fonctions manquantes / placeholders ----------------
 def compute_total_and_cumdist(points):
@@ -304,7 +320,12 @@ for i in range(1, st.session_state.n_refs + 1):
             update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
 
             # Met à jour les variables locales pour l'UI
-            dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
+            dist, dup, ddn, temps = (
+                st.session_state.get(f"dist_{i}", dist or 0.0),
+                st.session_state.get(f"dup_{i}", dup or 0.0),
+                st.session_state.get(f"ddn_{i}", ddn or 0.0),
+                st.session_state.get(f"temps_{i}", temps or "00:00:00")
+            )
 
     refs.append({
         "distance": float(st.session_state.get(f"dist_{i}", dist or 0.0)),

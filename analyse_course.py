@@ -166,110 +166,132 @@ def parse_tcx(file):
         "duration_hms": duration_hms
     }
 
-# ---------------- Session helpers sécurisés ----------------
-def safe_float(val):
-    """Convertit en float, retourne 0.0 si invalide."""
+# ---------------- Session helpers ----------------
+# ---------------- Session helpers (sécurisé) ----------------
+def update_ref_session(i, dist, temps, dup, ddn):
+    st.session_state[f"dist_{i}"] = float(dist or 0.0)
+    st.session_state[f"temps_{i}"] = str(temps or "00:00:00")
+    st.session_state[f"dup_{i}"] = float(dup or 0.0)
+    st.session_state[f"ddn_{i}"] = float(ddn or 0.0)
+    """Met à jour st.session_state de manière sécurisée."""
     try:
-        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
-            return 0.0
-        return float(val)
+        st.session_state[f"dist_{i}"] = float(dist) if dist not in [None, np.nan] else 0.0
     except Exception:
-        return 0.0
+        st.session_state[f"dist_{i}"] = 0.0
 
-def safe_str(val):
-    """Convertit en string, retourne '00:00:00' si invalide."""
     try:
-        if val is None or val == "":
-            return "00:00:00"
-        return str(val)
+        st.session_state[f"temps_{i}"] = str(temps) if temps else "00:00:00"
     except Exception:
-        return "00:00:00"
+        st.session_state[f"temps_{i}"] = "00:00:00"
 
-def update_ref_session(i, dist=None, temps=None, dup=None, ddn=None):
-    """Met à jour st.session_state de manière sécurisée pour éviter StreamlitAPIException"""
-    if st.session_state is not None:
-        try:
-            st.session_state[f"dist_{i}"] = safe_float(dist)
-        except Exception:
-            st.session_state[f"dist_{i}"] = 0.0
-        try:
-            st.session_state[f"temps_{i}"] = safe_str(temps)
-        except Exception:
-            st.session_state[f"temps_{i}"] = "00:00:00"
-        try:
-            st.session_state[f"dup_{i}"] = safe_float(dup)
-        except Exception:
-            st.session_state[f"dup_{i}"] = 0.0
-        try:
-            st.session_state[f"ddn_{i}"] = safe_float(ddn)
-        except Exception:
-            st.session_state[f"ddn_{i}"] = 0.0
+    try:
+        st.session_state[f"dup_{i}"] = float(dup) if dup not in [None, np.nan] else 0.0
+    except Exception:
+        st.session_state[f"dup_{i}"] = 0.0
 
-# ---------------- UI & Inputs pour références ----------------
-st.header("2️⃣ Courses de référence (manuel ou FIT/TCX)")
+    try:
+        st.session_state[f"ddn_{i}"] = float(ddn) if ddn not in [None, np.nan] else 0.0
+    except Exception:
+        st.session_state[f"ddn_{i}"] = 0.0
 
-if "n_refs" not in st.session_state:
-    st.session_state.n_refs = 3
-
-cols = st.columns([1,1])
-with cols[0]:
-    if st.button("➕ Ajouter (max 6)") and st.session_state.n_refs < 6:
-        st.session_state.n_refs += 1
-with cols[1]:
-    if st.button("➖ Retirer") and st.session_state.n_refs > 1:
-        st.session_state.n_refs -= 1
-
-refs = []
-for i in range(1, st.session_state.n_refs + 1):
-    st.markdown(f"#### Référence {i}")
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
-        use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
-    default_dist = st.session_state.get(f"dist_{i}", 5000 * i)
-    default_temps = st.session_state.get(f"temps_{i}", "0:40:00")
-    default_dup = st.session_state.get(f"dup_{i}", 0.0)
-    default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
-    with c2:
-        dist = st.number_input(f"Dist {i} (m)", value=default_dist, key=f"dist_{i}")
-    with c3:
-        temps = st.text_input(f"Temps {i} (h:mm:ss)", value=default_temps, key=f"temps_{i}")
-    with c4:
-        dup = st.number_input(f"D+ {i}", value=default_dup, key=f"dup_{i}")
-    with c5:
-        ddn = st.number_input(f"D- {i}", value=default_ddn, key=f"ddn_{i}")
-    with c6:
+# ---------------- Placeholders / Functions manquantes ----------------
+def compute_total_and_cumdist(points):
+@@ -258,450 +274,461 @@
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
-        dist_f = temps_f = dup_f = ddn_f = None
         if file_in:
             name = getattr(file_in, "name", "") or ""
+            # --- FIT ---
+            if name.lower().endswith(".fit"):
+                data_fit = parse_fit(file_in)
+                if data_fit:
+                    dist_f, dup_f, ddn_f = data_fit["distance"], data_fit["D_up"], data_fit["D_down"]
+                    temps_f = data_fit.get("duration_hms")
+                    if not temps_f:
+                        st.warning("Aucune durée détectée, veuillez saisir une plage (min/max) :")
+                        col_min, col_max = st.columns(2)
+                        with col_min:
+                            mins_input = st.number_input(f"Temps min (min) référence {i}", min_value=1, value=20, key=f"min_temps_{i}")
+                        with col_max:
+                            maxs_input = st.number_input(f"Temps max (min) référence {i}", min_value=1, value=40, key=f"max_temps_{i}")
+                        temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
+                    st.info(f"✔ FIT détecté : {dist_f}m | D+{dup_f} | D-{ddn_f} | dur: {temps_f}")
+                    update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
+                    dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
+                else:
+                    st.warning("Fichier FIT non exploitable.")
+            # --- TCX ---
+            elif name.lower().endswith(".tcx"):
+                tcx_res = parse_tcx(file_in)
+                if tcx_res:
+                    dist_f = int(round(tcx_res["distance"]))
+                    dup_f = int(round(tcx_res["D_up"]))
+                    ddn_f = int(round(tcx_res["D_down"]))
+                    temps_f = tcx_res.get("duration_hms")
+                    if not temps_f:
+                        st.warning("Aucune durée détectée, veuillez saisir une plage (min/max) :")
+                        col_min, col_max = st.columns(2)
+                        with col_min:
+                            mins_input = st.number_input(f"Temps min (min) référence {i}", min_value=1, value=20, key=f"min_temps_{i}")
+                        with col_max:
+                            maxs_input = st.number_input(f"Temps max (min) référence {i}", min_value=1, value=40, key=f"max_temps_{i}")
+                        temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
+                    st.info(f"✔ TCX détecté : {dist_f}m | D+{dup_f} | D-{ddn_f} | dur: {temps_f}")
+                    update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
+                    dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
+                else:
+                    st.warning("Fichier TCX non exploitable.")
+            dist_f = dup_f = ddn_f = None
+            temps_f = None
             try:
+                # --- FIT ---
                 if name.lower().endswith(".fit"):
                     data_fit = parse_fit(file_in)
                     if data_fit:
                         dist_f = data_fit.get("distance", 0)
                         dup_f = data_fit.get("D_up", 0)
                         ddn_f = data_fit.get("D_down", 0)
-                        temps_f = data_fit.get("duration_hms") or "00:00:00"
+                        temps_f = data_fit.get("duration_hms")
+                        if not temps_f:
+                            st.warning(f"Aucune durée détectée pour FIT Réf {i}, saisie min/max requise :")
+                            col_min, col_max = st.columns(2)
+                            with col_min:
+                                mins_input = st.number_input(f"Temps min (min) FIT réf {i}", min_value=1, value=20, key=f"min_temps_{i}")
+                            with col_max:
+                                maxs_input = st.number_input(f"Temps max (min) FIT réf {i}", min_value=1, value=40, key=f"max_temps_{i}")
+                            temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
                         st.info(f"✔ FIT détecté : {dist_f}m | D+ {dup_f} | D- {ddn_f} | dur: {temps_f}")
                     else:
                         st.warning(f"Fichier FIT Réf {i} non exploitable.")
+
+                # --- TCX ---
                 elif name.lower().endswith(".tcx"):
                     tcx_res = parse_tcx(file_in)
                     if tcx_res:
                         dist_f = int(round(tcx_res.get("distance",0)))
                         dup_f = int(round(tcx_res.get("D_up",0)))
                         ddn_f = int(round(tcx_res.get("D_down",0)))
-                        temps_f = tcx_res.get("duration_hms") or "00:00:00"
+                        temps_f = tcx_res.get("duration_hms")
+                        if not temps_f:
+                            st.warning(f"Aucune durée détectée pour TCX Réf {i}, saisie min/max requise :")
+                            col_min, col_max = st.columns(2)
+                            with col_min:
+                                mins_input = st.number_input(f"Temps min (min) TCX réf {i}", min_value=1, value=20, key=f"min_temps_tcx_{i}")
+                            with col_max:
+                                maxs_input = st.number_input(f"Temps max (min) TCX réf {i}", min_value=1, value=40, key=f"max_temps_tcx_{i}")
+                            temps_f = seconds_to_hms((mins_input + maxs_input)/2 * 60)
                         st.info(f"✔ TCX détecté : {dist_f}m | D+ {dup_f} | D- {ddn_f} | dur: {temps_f}")
                     else:
                         st.warning(f"Fichier TCX Réf {i} non exploitable.")
-            except Exception as e:
-                st.error(f"Erreur parsing fichier Réf {i} : {e}")
 
-            # ⚡ Mise à jour sécurisée session_state
+            except Exception as e:
+                st.error(f"Erreur lors du parsing fichier Réf {i} : {e}")
+
+            # Met à jour session_state sécurisée
             update_ref_session(i, dist_f, temps_f, dup_f, ddn_f)
 
-    # Construction des refs pour calculs suivants
+            # Met à jour les variables locales pour l'UI
+            dist, dup, ddn, temps = dist_f, dup_f, ddn_f, temps_f
+
     refs.append({
         "distance": float(st.session_state.get(f"dist_{i}", dist or 0.0)),
         "temps": str(st.session_state.get(f"temps_{i}", temps or "00:00:00")),
@@ -278,21 +300,59 @@ for i in range(1, st.session_state.n_refs + 1):
     })
 
 # ==============================================================
-# 3️⃣ Paramètres modèle & entrée utilisateur
+# TEMPS CORRIGÉS 0% & 12°C POUR TOUTES LES RÉFÉRENCES IMPORTÉES
 # ==============================================================
+
+st.subheader("⏱️ Temps corrigés des références (0% & 12°C)")
+
+# use default coeff if widgets not yet set
+_default_k_up = 1.040
+_default_k_down = 0.996
+
+for i in range(1, st.session_state.n_refs + 1):
+
+    # read from session_state (this ensures we reflect imports)
+    dist = st.session_state.get(f"dist_{i}", 0.0)
+    temps = st.session_state.get(f"temps_{i}", "00:00:00")
+    dup = float(st.session_state.get(f"dup_{i}", 0.0))
+    ddn = float(st.session_state.get(f"ddn_{i}", 0.0))
+
+    try:
+        # Conversion temps → secondes
+        secs = hms_to_seconds(temps)
+
+        # Corr. pente : utilisation de la correction en % de pente
+        t_corr_pente = apply_elevation_gradient_route(
+            time_flat_s=secs,
+            d_up_m=dup,
+            d_down_m=ddn,
+            segment_length_m=dist if dist > 0 else 1000.0,   # NOTE : dist en mètres, fallback to 1000m
+            k_up=_default_k_up,
+            k_down=_default_k_down,
+        )
+
+        # Corr. température : neutralisation à 12°C
+        mult_temp_ref = temp_multiplier_nonlin(12.0)
+        # neutralisation means divide by multiplier to get to 12°C baseline
+        t_corr_final = t_corr_pente / mult_temp_ref if mult_temp_ref != 0 else t_corr_pente
+
+        t_corr_hms = seconds_to_hms(t_corr_final)
+
+        # single-line f-string (no unintended newline)
+        st.markdown(f"**Référence {i} — Temps corrigé 0% & 12°C : `{t_corr_hms}`**  *(Temps brut : {temps}, D+ {dup} m / D- {ddn} m)*")
+
+    except Exception as e:
+        st.warning(f"Impossible de corriger la référence {i} : {e}")
 
 st.header("3️⃣ Paramètres modèle")
 c1, c2 = st.columns(2)
-
 with c1:
     use_elev_coeff = st.checkbox("Activer coefficients montée/descente 🎢", value=True)
     if use_elev_coeff:
         k_up = st.number_input("Coefficient montée (k_up)", value=1.040, format="%.3f", step=0.001)
         k_down = st.number_input("Coefficient descente (k_down)", value=0.996, format="%.3f", step=0.001)
     else:
-        k_up = 1.0
-        k_down = 1.0
-
+        k_up = 1.0; k_down = 1.0
 with c2:
     use_temp_coeff = st.checkbox("Activer coefficients température 🌡️", value=True)
     if use_temp_coeff:
@@ -300,11 +360,8 @@ with c2:
         k_temp_cold = st.number_input("Sensibilité froide (k_temp_cold)", value=0.002, format="%.3f", step=0.001)
         opt_temp = st.number_input("Température optimale (°C)", value=12.0, format="%.1f", step=0.5)
     else:
-        k_temp_hot = 0.0
-        k_temp_cold = 0.0
-        opt_temp = 12.0
+        k_temp_hot = 0.0; k_temp_cold = 0.0; opt_temp = 12.0
 
-# Coordonnées pour météo
 col1, col2 = st.columns(2)
 with col1:
     lat_input = st.number_input("Latitude (pour météo)", value=48.8566, format="%.6f")
@@ -314,18 +371,200 @@ with col2:
     date_course = st.date_input("Date de la course (Jour J)", value=date.today())
     heure_course = st.time_input("Heure de départ (Jour J)", value=time(9, 0))
 
-# Fatigue linéaire
+if use_hist_refs:
+    st.markdown("**Dates/Heures pour les références**")
+    for idx, r in enumerate(refs):
+        cA, cB = st.columns(2)
+        with cA:
+            ref_date = st.date_input(f"Date référence #{idx+1}", key=f"ref_date_{idx}", value=date.today())
+        with cB:
+            ref_time = st.time_input(f"Heure référence #{idx+1}", key=f"ref_time_{idx}", value=time(9, 0))
+        refs[idx]["ref_datetime"] = datetime.combine(ref_date, ref_time)
+
 st.header("3️⃣ bis. Fatigue linéaire")
 fatigue_active = st.checkbox("Activer fatigue ?", value=False)
-fatigue_rate = st.slider("Régression finale (%)", 0.0, 30.0, 5.0, 0.5) if fatigue_active else 0.0
+fatigue_rate = 0.0
+if fatigue_active:
+    fatigue_rate = st.slider("Régression finale (%)", 0.0, 30.0, 5.0, 0.5)
 
-# ==============================================================
-# 4️⃣ Calcul & Comparaison (BASE / FORCÉ)
-# ==============================================================
+# ---------------- helper to fetch historic temps (cached) ----------------
+@st.cache_data(ttl=60)
+def fetch_historical_range(lat, lon, start_date, end_date):
+    return fetch_open_meteo_hourly(lat, lon, start_date.isoformat(), end_date.isoformat())
 
+# ---------------- run_prediction_df (retourne df + meta) ----------------
+def run_prediction_df(distance_cible_km,
+                      refs_input,
+                      points,
+                      date_course_local,
+                      heure_course_local,
+                      use_hist_for_refs_local=False,
+                      apply_elev=True,
+                      apply_temp=True,
+                      apply_fatigue=True,
+                      objective_time_hms=None,
+                      local_k_up=1.040, local_k_down=0.996,
+                      local_k_temp_hot=0.002, local_k_temp_cold=0.002, local_opt_temp=12.0,
+                      local_fatigue_rate=0.0):
+    if not points or len(points) < 2:
+        raise ValueError("GPX invalide ou trop court.")
+
+    total_m, dists, method_used, debug = compute_total_and_cumdist(points)
+    distance_gpx_km = total_m / 1000.0
+
+    if not distance_cible_km or distance_cible_km <= 0:
+        distance_cible_km = distance_gpx_km
+
+    facteur_dist = distance_cible_km / max(distance_gpx_km, 1e-6)
+    total_corr = total_m * facteur_dist
+    dists_corr = np.asarray([d * facteur_dist for d in dists])
+
+    elev_list = np.asarray([p.elevation or 0 for p in points])
+    if len(dists_corr) != len(elev_list):
+        xs = np.linspace(0, total_m, len(elev_list))
+        new_x = np.linspace(0, total_m, len(dists_corr))
+        elev_list = np.interp(new_x, xs, elev_list)
+
+    center_lat = np.mean([p.latitude for p in points])
+    center_lon = np.mean([p.longitude for p in points])
+    min_ref_date = None; max_ref_date = date_course_local
+    if use_hist_for_refs_local:
+        for r in refs_input:
+            rd = r.get("ref_datetime")
+            if rd:
+                d = rd.date()
+                if min_ref_date is None or d < min_ref_date:
+                    min_ref_date = d
+                if d > max_ref_date:
+                    max_ref_date = d
+    if min_ref_date is None:
+        min_ref_date = date_course_local
+
+    try:
+        hourly_temps_cache = fetch_historical_range(center_lat, center_lon, min_ref_date, max_ref_date)
+    except Exception:
+        hourly_temps_cache = {}
+
+    refs_for_fit = []
+    if use_hist_for_refs_local and hourly_temps_cache:
+        for r in refs_input:
+            rr = r.copy()
+            rd = r.get("ref_datetime")
+            if rd:
+                t_ref = get_temp_for_datetime(hourly_temps_cache, rd)
+                mult = temp_multiplier_nonlin(t_ref, opt_temp=local_opt_temp, k_hot=local_k_temp_hot, k_cold=local_k_temp_cold)
+                secs = hms_to_seconds(r.get("temps", "0:00:00"))
+                if secs > 0 and mult > 0:
+                    new_secs = secs / mult
+                    rr["temps"] = seconds_to_hms(new_secs)
+                    rr["_temp_ref"] = t_ref
+            refs_for_fit.append(rr)
+    else:
+        refs_for_fit = [r.copy() for r in refs_input]
+
+    a, K = fit_loglog_model(refs_for_fit, k_up=(local_k_up if apply_elev else 1.0), k_down=(local_k_down if apply_elev else 1.0))
+
+    if objective_time_hms:
+        try:
+            a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
+        except Exception as e:
+            raise
+
+    distance_cible_m = int(distance_cible_km * 1000)
+    base_flat_total = predict_time_flat(distance_cible_m, (a_override if objective_time_hms else a), K)
+    base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
+
+    km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
+    last_seg = total_corr - (int(total_corr // 1000) * 1000)
+    if last_seg > 1e-6:
+        km_marks.append(total_corr)
+
+    segment_infos = []
+    cum_time_temp = 0.0
+    dt_depart = datetime.combine(date_course_local, heure_course_local)
+    for i, d in enumerate(km_marks):
+        e_cur = float(np.interp(d, dists_corr, elev_list))
+        e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
+        d_up = max(0.0, e_cur - e_prev)
+        d_down = max(0.0, e_prev - e_cur)
+
+        seg_length_m = 1000.0 if (i < len(km_marks) - 1 or last_seg < 1e-6) else (d - km_marks[-2] if len(km_marks) >= 2 else d)
+        t_km_flat = base_s_per_km_flat * (seg_length_m / 1000.0)
+
+        t_km_after_elev = apply_elevation_gradient_route(t_km_flat, d_up, d_down, segment_length_m=seg_length_m, k_up=local_k_up, k_down=local_k_down) if apply_elev else t_km_flat
+
+        if apply_fatigue and local_fatigue_rate > 0 and total_corr > 0:
+            progression = d / total_corr
+            t_km_after_fatigue = t_km_after_elev * (1.0 + (local_fatigue_rate / 100.0) * progression)
+        else:
+            t_km_after_fatigue = t_km_after_elev
+
+        passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_km_after_fatigue / 2.0)
+        temp_at_passage = get_temp_for_datetime(hourly_temps_cache, passage_dt)
+        if apply_temp and temp_at_passage is not None:
+            mult_temp = temp_multiplier_nonlin(temp_at_passage, opt_temp=local_opt_temp, k_hot=local_k_temp_hot, k_cold=local_k_temp_cold)
+            t_km_after_temp = t_km_after_fatigue * mult_temp
+        else:
+            mult_temp = 1.0
+            t_km_after_temp = t_km_after_fatigue
+
+        segment_infos.append({
+            "idx": i,
+            "d": d,
+            "seg_length_m": seg_length_m,
+            "d_up": d_up,
+            "d_down": d_down,
+            "temp": temp_at_passage,
+            "temp_mult": mult_temp,
+            "t_raw": t_km_after_temp
+        })
+
+        cum_time_temp += t_km_after_temp
+
+    if objective_time_hms:
+        objective_seconds = hms_to_seconds(objective_time_hms)
+        sum_raw = sum(s["t_raw"] for s in segment_infos)
+        if sum_raw <= 0:
+            scale = 1.0
+        else:
+            scale = objective_seconds / sum_raw
+    else:
+        scale = 1.0
+
+    results = []
+    cum_time = 0.0
+    for seg in segment_infos:
+        t_km = seg["t_raw"] * scale
+        cum_time += t_km
+        pace_per_km = (t_km / seg["seg_length_m"]) * 1000.0 if seg["seg_length_m"] > 0 else t_km
+        results.append({
+            "Km": seg["idx"] + 1 if seg["seg_length_m"] >= 1000 - 1e-6 else f"{seg['idx']+1} ({seg['seg_length_m']:.0f}m)",
+            "D+ (m)": round(seg["d_up"], 1),
+            "D- (m)": round(seg["d_down"], 1),
+            "Temp (°C)": round(seg["temp"], 1) if seg["temp"] is not None else None,
+            "Temp Mult.": round(seg["temp_mult"], 4),
+            "Temps segment (s)": round(t_km, 1),
+            "Allure (min/km)": pace_seconds_to_str_per_km(pace_per_km),
+            "Temps cumulé": seconds_to_hms(cum_time),
+        })
+
+    df = pd.DataFrame(results)
+    total_seconds = sum(s["t_raw"] for s in segment_infos) * scale
+    return {
+        "df": df,
+        "total_seconds": total_seconds,
+        "total_human": seconds_to_hms(total_seconds),
+        "distance_gpx_km": distance_gpx_km,
+        "method_used": method_used,
+        "debug": debug,
+        "base_flat_total": base_flat_total,
+        "a": a, "K": K
+    }
+
+# ----------------- Interactions : bouton base et forcé (affichage côte-à-côte) -----------------
 st.subheader("4️⃣ Calcul & Comparaison")
 
-# --- Calcul BASE (références) ---
+# bouton pour calcul base (références)
 if st.button("▶️ Calculer prédiction (BASE, d'après références)"):
     if not gpx_file:
         st.error("Importe un fichier GPX d'abord.")
@@ -349,7 +588,7 @@ if st.button("▶️ Calculer prédiction (BASE, d'après références)"):
         st.session_state["res_base"] = res_base
         st.success(f"Base calculée — distance GPX détectée: {res_base['distance_gpx_km']:.3f} km (méthode: {res_base['method_used']})")
 
-# --- Forcer distance / temps objectif ---
+# zone for forcing options and final calculation
 st.markdown("---")
 st.markdown("**Forcer distance et/ou temps objectif (produit un tableau 'FORCÉ' distinct)**")
 colf1, colf2 = st.columns(2)
@@ -385,7 +624,7 @@ if st.button("📊 Calculer prédiction finale (FORCÉ si activé)"):
         st.session_state["res_forced"] = res_forced
         st.success(f"Prédiction forcée calculée — cible: {distance_forced_km if distance_forced_km else 'GPX'} km")
 
-# --- Affichage côte-à-côte BASE / FORCÉ ---
+# Afficher côte-à-côte si disponibles
 if "res_base" in st.session_state or "res_forced" in st.session_state:
     base = st.session_state.get("res_base", None)
     forced = st.session_state.get("res_forced", None)
@@ -412,10 +651,7 @@ if "res_base" in st.session_state or "res_forced" in st.session_state:
         else:
             st.info("Clique sur 'Calculer prédiction finale (FORCÉ)' pour générer ce tableau.")
 
-# ==============================================================
-# 5️⃣ Carte & Profil d'altitude (GPX)
-# ==============================================================
-
+# ---------------- Carte + profil (affiche using last used points if exist) ----------------
 if gpx_file:
     try:
         gpx, points = parse_gpx_points(gpx_file)
@@ -423,7 +659,7 @@ if gpx_file:
 
         st.subheader("🗺️ Carte & Profil (GPX importé)")
 
-        # --- Carte ---
+        # Carte
         view = pdk.ViewState(
             latitude=df_points.lat.mean(),
             longitude=df_points.lon.mean(),
@@ -445,7 +681,7 @@ if gpx_file:
         )
         st.pydeck_chart(deck, use_container_width=True)
 
-        # --- Profil d'altitude ---
+        # Profil d'altitude
         st.subheader("📊 Profil d'altitude")
         plt.figure(figsize=(10, 4))
 
@@ -462,35 +698,3 @@ if gpx_file:
         st.pyplot(plt)
     except Exception as e:
         st.error(f"Impossible d'afficher la carte/profil : {e}")
-
-# ==============================================================
-# 6️⃣ Fonction update_ref_session (mise à jour sécurisée session_state)
-# ==============================================================
-
-def safe_float(val, fallback=0.0):
-    """Convertit en float de manière sécurisée."""
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return fallback
-
-def update_ref_session(i, dist, temps, dup, ddn):
-    """
-    Met à jour les variables de session pour la référence i.
-    Cette version utilise setdefault pour éviter les erreurs Streamlit.
-    """
-    # Initialisation sécurisée si clé absente
-    if f"dist_{i}" not in st.session_state:
-        st.session_state[f"dist_{i}"] = 0.0
-    if f"temps_{i}" not in st.session_state:
-        st.session_state[f"temps_{i}"] = "00:00:00"
-    if f"dup_{i}" not in st.session_state:
-        st.session_state[f"dup_{i}"] = 0.0
-    if f"ddn_{i}" not in st.session_state:
-        st.session_state[f"ddn_{i}"] = 0.0
-
-    # Mise à jour sécurisée
-    st.session_state[f"dist_{i}"] = safe_float(dist)
-    st.session_state[f"temps_{i}"] = str(temps) if temps is not None else "00:00:00"
-    st.session_state[f"dup_{i}"] = safe_float(dup)
-    st.session_state[f"ddn_{i}"] = safe_float(ddn)

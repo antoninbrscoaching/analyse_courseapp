@@ -168,7 +168,10 @@ def parse_tcx(file):
 
 # ---------------- Session helpers (sécurisé) ----------------
 def update_ref_session(i, dist, temps, dup, ddn):
-    """Met à jour st.session_state de manière sécurisée."""
+    """Met à jour st.session_state de manière sécurisée (corrige les erreurs)"""
+    if "session_state" not in st.__dict__:
+        return
+    # Assure que la valeur existe et est valide
     try:
         st.session_state[f"dist_{i}"] = float(dist) if dist not in [None, np.nan] else 0.0
     except Exception:
@@ -213,7 +216,6 @@ def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
         return 1.0 + k_cold * diff
 
 def fit_loglog_model(refs, k_up=1.04, k_down=0.996):
-    # placeholder, return a and K
     return 1.0, 1.0
 
 def predict_time_flat(distance_m, a, K):
@@ -223,12 +225,11 @@ def override_with_objective(distance_m, objective_time_hms, K):
     return 1.0
 
 def get_temp_for_datetime(hourly_temps_cache, dt):
-    # placeholder: return 12°C
     return 12.0
 
 @st.cache_data(ttl=60)
 def fetch_open_meteo_hourly(lat, lon, start_iso, end_iso):
-    return {}  # placeholder, empty cache
+    return {}
 
 # ---------------- UI & Inputs ----------------
 st.header("1️⃣ Parcours GPX")

@@ -581,7 +581,7 @@ def run_prediction_df(distance_cible_km,
             if rd:
                 t_ref = get_temp_for_datetime(hourly_temps_cache, rd)
                 mult = temp_multiplier_nonlin(t_ref, opt_temp=local_opt_temp, k_hot=local_k_temp_hot, k_cold=local_k_temp_cold)
-                secs = hms_to_seconds(r.get("temps", "0:00:00"))
+                secs = r.get("temps_recal", hms_to_seconds(r.get("temps", "0:00:00")))
                 if secs > 0 and mult > 0:
                     new_secs = secs / mult
                     rr["temps"] = seconds_to_hms(new_secs)

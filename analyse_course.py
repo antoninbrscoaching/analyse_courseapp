@@ -187,105 +187,133 @@ def parse_tcx(file):
         "duration_hms": duration_hms
     }
 
-# -------------------------
-# SESSION-STATE SAFE HELPERS
-# -------------------------
+# ---------------- Session helpers sécurisés (REMPLACER L'ANCIEN BLOC) ----------------
+
 def safe_float(val):
+    """Convertit proprement une valeur vers float (garantit un float valide)."""
     try:
         if val is None:
             return 0.0
+        # si c'est une string numérique, tenter la conversion
+        if isinstance(val, str):
+            s = val.strip()
+            if s == "" or s.lower() in ("nan", "none"):
+                return 0.0
+            return float(s.replace(",", "."))
+        # floats invalides
         if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
             return 0.0
         return float(val)
     except Exception:
-        try:
-            return float(str(val))
-        except Exception:
-            return 0.0
+        return 0.0
+
 
 def safe_str(val):
+    """Convertit proprement une valeur vers string (format h:mm:ss attendu)."""
     try:
         if val is None:
             return "00:00:00"
-        s = str(val)
-        if s.strip() == "":
+        # si c'est un nombre de secondes, transformer en h:m:s
+        if isinstance(val, (int, float)) and not np.isnan(val) and not np.isinf(val):
+            return seconds_to_hms(float(val))
+        s = str(val).strip()
+        if s == "" or s.lower() in ("nan", "none"):
             return "00:00:00"
         return s
     except Exception:
         return "00:00:00"
 
+
 def safe_set(key, value):
     """
-    Empêche absolument NaN / Inf / None dans session_state.
+    Wrapper pour protéger Streamlit contre les valeurs interdites.
+    Ne laisse jamais None / NaN / Inf / chaîne vide dans session_state.
     """
-    # Convertir floats invalides
+    # Normaliser floats
     if isinstance(value, float):
         if np.isnan(value) or np.isinf(value):
             value = 0.0
 
-    # None est interdit
+    # None interdit -> valeur par défaut selon le key
     if value is None:
         if key.startswith(("dist_", "dup_", "ddn_")):
             value = 0.0
         else:
             value = "00:00:00"
 
-    # Chaînes vide interdites pour les temps
+    # Chaînes vides interdites pour les temps
     if isinstance(value, str) and value.strip() == "":
         value = "00:00:00"
 
-    # OK — stockage
+    # Assurer type cohérent pour distance/alt
+    if key.startswith(("dist_", "dup_", "ddn_")):
+        try:
+            value = float(value)
+        except Exception:
+            value = 0.0
+
     st.session_state[key] = value
 
-    # Normaliser None
-    if value is None:
-        # choose default based on key prefix
-        if key.startswith(("dist_", "dup_", "ddn_")):
-            value = 0.0
-        else:
-            value = "00:00:00"
 
-    # Ensure only simple types
-    if isinstance(value, (int, float, str, bool)):
-        st.session_state[key] = value
-    else:
-        # fallback: stringify
-        st.session_state[key] = str(value)
-
-# --- Nettoyage impératif avant session_state ---
 def clean_value(v):
+    """
+    Nettoyage léger pour les valeurs extraites des fichiers avant mise à jour.
+    Retourne soit float (pour distances/alt) soit string (pour temps).
+    - None -> 0.0 ou '00:00:00' selon le type détecté en aval.
+    - strings vides -> '00:00:00'
+    - strings numériques -> float
+    """
     try:
         if v is None:
-            return 0.0
-        if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
-            return 0.0
+            return None
+        if isinstance(v, (int, float)):
+            # normaliser les floats mauvais
+            if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+                return 0.0
+            return v
         if isinstance(v, str):
             s = v.strip()
-            if s == "" or s.lower() in ["nan", "none"]:
-                return "00:00:00"
-        return v
-    except:
-        return 0.0
+            if s == "" or s.lower() in ("none", "nan"):
+                return None
+            # heuristique : si la chaîne contient ':' on suppose un temps
+            if ":" in s:
+                return s
+            # tenter conversion numérique
+            try:
+                return float(s.replace(",", "."))
+            except:
+                return s
+        # autres types -> essayer float
+        try:
+            return float(v)
+        except:
+            return str(v)
+    except Exception:
+        return None
 
-dist_f = clean_value(dist_f)
-temps_f = clean_value(temps_f)
-dup_f = clean_value(dup_f)
-ddn_f = clean_value(ddn_f)
 
 def update_ref_session_safe(i, dist=None, temps=None, dup=None, ddn=None):
-    """Met à jour session_state avec filtrage sécurisé."""
+    """
+    Met à jour st.session_state avec filtrage sécurisé pour éviter StreamlitAPIException.
+    Appeler toujours après avoir éventuellement nettoyé les valeurs (clean_value).
+    """
     if dist is not None:
-        safe_set(f"dist_{i}", safe_float(dist))
+        # safe_float puis safe_set (garantit float stocké)
+        safe_val = safe_float(dist)
+        safe_set(f"dist_{i}", safe_val)
 
     if temps is not None:
-        # Le temps doit être une chaîne propre
-        safe_set(f"temps_{i}", safe_str(temps))
+        # safe_str puis safe_set (garantit string stocké)
+        safe_t = safe_str(temps)
+        safe_set(f"temps_{i}", safe_t)
 
     if dup is not None:
-        safe_set(f"dup_{i}", safe_float(dup))
+        safe_val = safe_float(dup)
+        safe_set(f"dup_{i}", safe_val)
 
     if ddn is not None:
-        safe_set(f"ddn_{i}", safe_float(ddn))
+        safe_val = safe_float(ddn)
+        safe_set(f"ddn_{i}", safe_val)
 
 # -------------------------
 # LOGIC: recalibration / small model placeholders

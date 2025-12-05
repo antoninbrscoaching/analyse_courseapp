@@ -432,130 +432,130 @@ def run_prediction_df(distance_cible_km,
         new_x = np.linspace(0, total_m, len(dists_corr))
         elev_list = np.interp(new_x, xs, elev_list)
 
-# -------------------------
-# Affichage références recalibrées
-# -------------------------
-st.subheader("⏱️ Références recalibrées")
-df_refs = pd.DataFrame([{
-    "Distance (m)": r["distance"],
-    "D+ (m)": r["D_up"],
-    "D- (m)": r["D_down"],
-    "Temps brut": seconds_to_hms(r["temps_brut"]),
-    "Temps conditions idéales": seconds_to_hms(r["temps_ideal"]),
-    "Temps météo historique": seconds_to_hms(r["temps_hist"]) if r["temps_hist"] else None,
-} for r in refs_calibrated])
-st.dataframe(df_refs, use_container_width=True)
+    # -------------------------
+    # Affichage références recalibrées
+    # -------------------------
+    st.subheader("⏱️ Références recalibrées")
+    df_refs = pd.DataFrame([{
+        "Distance (m)": r["distance"],
+        "D+ (m)": r["D_up"],
+        "D- (m)": r["D_down"],
+        "Temps brut": seconds_to_hms(r["temps_brut"]),
+        "Temps conditions idéales": seconds_to_hms(r["temps_ideal"]),
+        "Temps météo historique": seconds_to_hms(r["temps_hist"]) if r["temps_hist"] else None,
+    } for r in refs_calibrated])
+    st.dataframe(df_refs, use_container_width=True)
 
-# fit model
-a, K = fit_loglog_model(refs_for_fit)
+    # fit model
+    a, K = fit_loglog_model(refs_for_fit)
 
-# override if objective_time provided
-a_override = None
-if objective_time_hms:
-    a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
-baseline_seconds_per_km = (a_override if a_override is not None else a)
+    # override if objective_time provided
+    a_override = None
+    if objective_time_hms:
+        a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
+    baseline_seconds_per_km = (a_override if a_override is not None else a)
 
-# compute base flat total and per-km seconds
-distance_cible_m = int(distance_cible_km * 1000)
-base_flat_total = predict_time_flat(distance_cible_m, baseline_seconds_per_km, K)
-base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
+    # compute base flat total and per-km seconds
+    distance_cible_m = int(distance_cible_km * 1000)
+    base_flat_total = predict_time_flat(distance_cible_m, baseline_seconds_per_km, K)
+    base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
 
-# create km markers for segments
-km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
-last_seg = total_corr - (int(total_corr // 1000) * 1000)
-if last_seg > 1e-6:
-    km_marks.append(total_corr)
+    # create km markers for segments
+    km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
+    last_seg = total_corr - (int(total_corr // 1000) * 1000)
+    if last_seg > 1e-6:
+        km_marks.append(total_corr)
 
-segment_infos = []
-cum_time_temp = 0.0
-dt_depart = datetime.combine(date_course_local, heure_course_local)
-for i, d in enumerate(km_marks):
+    segment_infos = []
+    cum_time_temp = 0.0
+    dt_depart = datetime.combine(date_course_local, heure_course_local)
+    for i, d in enumerate(km_marks):
+        # elevation at boundaries (resampled)
+        e_cur = float(np.interp(d, dists_corr, elev_list))
+        e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
+        d_up = max(0.0, e_cur - e_prev)
+        d_down = max(0.0, e_prev - e_cur)
 
-    # elevation at boundaries (resampled)
-    e_cur = float(np.interp(d, dists_corr, elev_list))
-    e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
-    d_up = max(0.0, e_cur - e_prev)
-    d_down = max(0.0, e_prev - e_cur)
+        # segment length
+        seg_length_m = 1000.0 if (i < len(km_marks) - 1 or last_seg < 1e-6) else (d - km_marks[-2] if len(km_marks) >= 2 else d)
+        # flat time for segment (from baseline per-km)
+        t_km_flat = base_s_per_km_flat * (seg_length_m / 1000.0)
 
-    # segment length
-    seg_length_m = 1000.0 if (i < len(km_marks) - 1 or last_seg < 1e-6) else (d - km_marks[-2] if len(km_marks) >= 2 else d)
-    # flat time for segment (from baseline per-km)
-    t_km_flat = base_s_per_km_flat * (seg_length_m / 1000.0)
+        # apply elevation factor (per segment)
+        t_km_after_elev = apply_elevation_gradient_route(
+            t_km_flat, d_up, d_down, segment_length_m=seg_length_m, k_up=k_up, k_down=k_down
+        ) if apply_elev else t_km_flat
 
-    # apply elevation factor (per segment)
-    t_km_after_elev = apply_elevation_gradient_route(
-        t_km_flat, d_up, d_down, segment_length_m=seg_length_m, k_up=k_up, k_down=k_down
-    ) if apply_elev else t_km_flat
+        # apply fatigue (linear progression along distance)
+        if apply_fatigue and fatigue_rate > 0 and total_corr > 0:
+            progression = d / total_corr
+            t_km_after_fatigue = t_km_after_elev * (1.0 + (fatigue_rate / 100.0) * progression)
+        else:
+            t_km_after_fatigue = t_km_after_elev
 
-    # apply fatigue (linear progression along distance)
-    if apply_fatigue and fatigue_rate > 0 and total_corr > 0:
-        progression = d / total_corr
-        t_km_after_fatigue = t_km_after_elev * (1.0 + (fatigue_rate / 100.0) * progression)
+        # placeholder temperature at passage
+        passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_km_after_fatigue / 2.0)
+        temp_at_passage = None
+        if apply_temp and temp_at_passage is not None:
+            mult_temp = temp_multiplier_nonlin(
+                temp_at_passage, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold
+            )
+            t_km_after_temp = t_km_after_fatigue * mult_temp
+        else:
+            mult_temp = 1.0
+            t_km_after_temp = t_km_after_fatigue
+
+        segment_infos.append({
+            "idx": i,
+            "d": d,
+            "seg_length_m": seg_length_m,
+            "d_up": d_up,
+            "d_down": d_down,
+            "temp": temp_at_passage,
+            "temp_mult": mult_temp,
+            "t_raw": t_km_after_temp
+        })
+        cum_time_temp += t_km_after_temp
+
+    # objective scaling
+    if objective_time_hms:
+        objective_seconds = hms_to_seconds(objective_time_hms)
+        sum_raw = sum(s["t_raw"] for s in segment_infos)
+        scale = (objective_seconds / sum_raw) if (sum_raw > 0) else 1.0
     else:
-        t_km_after_fatigue = t_km_after_elev
+        scale = 1.0
 
-    # placeholder temperature at passage (not implemented) -> None => no temp effect
-    passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_km_after_fatigue / 2.0)
-    temp_at_passage = None  # could implement actual hourly temps
-    if apply_temp and temp_at_passage is not None:
-        mult_temp = temp_multiplier_nonlin(
-            temp_at_passage, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold
-        )
-        t_km_after_temp = t_km_after_fatigue * mult_temp
-    else:
-        mult_temp = 1.0
-        t_km_after_temp = t_km_after_fatigue
+    # build results dataframe
+    results = []
+    cum_time = 0.0
+    for seg in segment_infos:
+        t_km = seg["t_raw"] * scale
+        cum_time += t_km
+        pace_per_km = (t_km / seg["seg_length_m"]) * 1000.0 if seg["seg_length_m"] > 0 else t_km
+        results.append({
+            "Km": seg["idx"] + 1 if seg["seg_length_m"] >= 1000 - 1e-6 else f"{seg['idx']+1} ({seg['seg_length_m']:.0f}m)",
+            "D+ (m)": round(seg["d_up"], 1),
+            "D- (m)": round(seg["d_down"], 1),
+            "Temp (°C)": round(seg["temp"], 1) if seg["temp"] is not None else None,
+            "Temp Mult.": round(seg["temp_mult"], 4),
+            "Temps segment (s)": round(t_km, 1),
+            "Allure (min/km)": pace_seconds_to_str_per_km(pace_per_km),
+            "Temps cumulé": seconds_to_hms(cum_time),
+        })
 
-    segment_infos.append({
-        "idx": i,
-        "d": d,
-        "seg_length_m": seg_length_m,
-        "d_up": d_up,
-        "d_down": d_down,
-        "temp": temp_at_passage,
-        "temp_mult": mult_temp,
-        "t_raw": t_km_after_temp
-    })
-    cum_time_temp += t_km_after_temp
+    df = pd.DataFrame(results)
+    total_seconds = sum(s["t_raw"] for s in segment_infos) * scale
 
-# objective scaling
-if objective_time_hms:
-    objective_seconds = hms_to_seconds(objective_time_hms)
-    sum_raw = sum(s["t_raw"] for s in segment_infos)
-    scale = (objective_seconds / sum_raw) if (sum_raw > 0) else 1.0
-else:
-    scale = 1.0
-
-# build results dataframe
-results = []
-cum_time = 0.0
-for seg in segment_infos:
-    t_km = seg["t_raw"] * scale
-    cum_time += t_km
-    pace_per_km = (t_km / seg["seg_length_m"]) * 1000.0 if seg["seg_length_m"] > 0 else t_km
-    results.append({
-        "Km": seg["idx"] + 1 if seg["seg_length_m"] >= 1000 - 1e-6 else f"{seg['idx']+1} ({seg['seg_length_m']:.0f}m)",
-        "D+ (m)": round(seg["d_up"], 1),
-        "D- (m)": round(seg["d_down"], 1),
-        "Temp (°C)": round(seg["temp"], 1) if seg["temp"] is not None else None,
-        "Temp Mult.": round(seg["temp_mult"], 4),
-        "Temps segment (s)": round(t_km, 1),
-        "Allure (min/km)": pace_seconds_to_str_per_km(pace_per_km),
-        "Temps cumulé": seconds_to_hms(cum_time),
-    })
-
-df = pd.DataFrame(results)
-total_seconds = sum(s["t_raw"] for s in segment_infos) * scale
     return {
-    "df": df,
-    "total_seconds": total_seconds,
-    "total_human": seconds_to_hms(total_seconds),
-    "distance_gpx_km": distance_gpx_km,
-    "method_used": "3d_haversine",
-    "base_flat_total": base_flat_total,
-    "a": baseline_seconds_per_km,
-    "K": K
-}
+        "df": df,
+        "total_seconds": total_seconds,
+        "total_human": seconds_to_hms(total_seconds),
+        "distance_gpx_km": distance_gpx_km,
+        "method_used": "3d_haversine",
+        "base_flat_total": base_flat_total,
+        "a": baseline_seconds_per_km,
+        "K": K
+    }
 
 # -------------------------
 # UI : Entrées & Références

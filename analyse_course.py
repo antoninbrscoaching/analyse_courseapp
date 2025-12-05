@@ -461,7 +461,7 @@ for i in range(1, st.session_state.n_refs + 1):
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
 
-    # parse uploaded file (if any) and update local vars
+    # parse uploaded file (if any) et update local vars
     dist_f = dup_f = ddn_f = None
     temps_f = None
     if file_in:
@@ -483,48 +483,43 @@ for i in range(1, st.session_state.n_refs + 1):
                     temps_f = tcx_res.get("duration_hms")
         except Exception:
             pass
-            
-    # compute recalibrated time for ALL references
-def recalibrate_time(temps_hms, D_up, D_down, distance_m,
-                     temp_ideal=12.0, k_up=1.04, k_down=0.996,
-                     k_temp_hot=0.002, k_temp_cold=0.002):
-    secs = hms_to_seconds(temps_hms)
-    seg_len = distance_m if distance_m and distance_m > 0 else 1000.0
-    up_factor = (k_up - 1.0) * (D_up / max(seg_len, 1.0))
-    down_factor = (1.0 - k_down) * (D_down / max(seg_len, 1.0))
-    factor_elev = 1.0 + up_factor + down_factor
-    try:
-        secs_no_elev = secs / factor_elev if factor_elev != 0 else secs
-    except Exception:
-        secs_no_elev = secs
-    mult_temp_opt = temp_multiplier_nonlin(temp_ideal, opt_temp=temp_ideal, k_hot=k_temp_hot, k_cold=k_temp_cold)
-    try:
-        secs_flat_temp = secs_no_elev / mult_temp_opt if mult_temp_opt != 0 else secs_no_elev
-    except Exception:
-        secs_flat_temp = secs_no_elev
-    return max(secs_flat_temp, 0.0)
 
-# recalibrer la référence
-recal_secs = recalibrate_time(temps, dup, ddn, dist,
-                              temp_ideal=opt_temp, k_up=k_up, k_down=k_down,
-                              k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold)
-recal_hms = seconds_to_hms(recal_secs)
+    # ------------------------------------
+    # Recalibrage temps pour chaque référence
+    # ------------------------------------
+    # On utilise des valeurs par défaut si paramètres modèle pas encore définis
+    local_k_up = st.session_state.get("k_up", 1.04)
+    local_k_down = st.session_state.get("k_down", 0.996)
+    local_k_temp_hot = st.session_state.get("k_temp_hot", 0.002)
+    local_k_temp_cold = st.session_state.get("k_temp_cold", 0.002)
+    local_opt_temp = st.session_state.get("opt_temp", 12.0)
 
-# ajouter à refs (une seule fois)
-refs.append({
-    "distance": float(dist),
-    "temps": str(temps),
-    "D_up": float(dup),
-    "D_down": float(ddn),
-    "temps_recal": float(recal_secs),
-    "temps_recal_hms": recal_hms
-})
+    recal_secs = recalibrate_time(
+        temps_hms=temps,
+        D_up=dup,
+        D_down=ddn,
+        distance_m=dist,
+        temp_ideal=local_opt_temp,
+        k_up=local_k_up,
+        k_down=local_k_down,
+        k_temp_hot=local_k_temp_hot,
+        k_temp_cold=local_k_temp_cold
+    )
+    recal_hms = seconds_to_hms(recal_secs)
 
-# afficher à l’utilisateur
-st.markdown(f"Temps brut : `{temps}`  →  Temps recalibré (0% & {opt_temp}°C) : `{recal_hms}`")
+    refs.append({
+        "distance": float(dist),
+        "temps": str(temps),
+        "D_up": float(dup),
+        "D_down": float(ddn),
+        "temps_recal": float(recal_secs),
+        "temps_recal_hms": recal_hms
+    })
+
+    st.markdown(f"Temps brut : `{temps}` → Temps recalibré (0% & {local_opt_temp}°C) : `{recal_hms}`")
 
 # -------------------------
-# Affichage des temps recalculés global (séparé)
+# Affichage des temps recalculés global
 # -------------------------
 st.subheader("⏱️ Récap — Références recalibrées (0% & 12°C)")
 for idx, r in enumerate(refs, start=1):

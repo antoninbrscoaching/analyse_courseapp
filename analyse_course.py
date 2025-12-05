@@ -787,12 +787,29 @@ if st.button("▶️ Calculer prédiction (BASE, d'après références)"):
 st.markdown("---")
 st.markdown("**Forcer distance et/ou temps objectif (produit un tableau 'FORCÉ' distinct)**")
 colf1, colf2 = st.columns(2)
+
+# --- DISTANCE FORCÉE ---
 with colf1:
     force_distance_checkbox = st.checkbox("Forcer la distance pour la prédiction finale ?", value=False)
-    distance_forced_km = st.number_input("Distance forcée (km)", value=5.17, format="%.2f") if force_distance_checkbox else None
+    if "dist_forced" not in st.session_state:
+        st.session_state["dist_forced"] = 5.17
+    distance_forced_km = st.number_input(
+        "Distance forcée (km)",
+        value=st.session_state["dist_forced"],
+        format="%.2f",
+        key="dist_forced"
+    ) if force_distance_checkbox else None
+
+# --- TEMPS OBJECTIF ---
 with colf2:
     force_time_checkbox = st.checkbox("Forcer un temps objectif ?", value=False)
-    time_forced_hms = st.text_input("Temps objectif (h:mm:ss)", value="0:18:30") if force_time_checkbox else None
+    if "time_forced" not in st.session_state:
+        st.session_state["time_forced"] = "0:18:30"
+    time_forced_hms = st.text_input(
+        "Temps objectif (h:mm:ss)",
+        value=st.session_state["time_forced"],
+        key="time_forced"
+    ) if force_time_checkbox else None
 
 if st.button("📊 Calculer prédiction finale (FORCÉ si activé)"):
     if not gpx_file:

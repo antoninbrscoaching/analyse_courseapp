@@ -484,38 +484,44 @@ for i in range(1, st.session_state.n_refs + 1):
         except Exception:
             pass
             
-    # Si fichier importé, mettre à jour uniquement les variables locales
-if file_in:
-    if dist_f is not None:
-        dist = float(dist_f)
-    if dup_f is not None:
-        dup = float(dup_f)
-    if ddn_f is not None:
-        ddn = float(ddn_f)
-    if temps_f is not None:
-        temps = str(temps_f)
+    # compute recalibrated time for ALL references
+def recalibrate_time(temps_hms, D_up, D_down, distance_m,
+                     temp_ideal=12.0, k_up=1.04, k_down=0.996,
+                     k_temp_hot=0.002, k_temp_cold=0.002):
+    secs = hms_to_seconds(temps_hms)
+    seg_len = distance_m if distance_m and distance_m > 0 else 1000.0
+    up_factor = (k_up - 1.0) * (D_up / max(seg_len, 1.0))
+    down_factor = (1.0 - k_down) * (D_down / max(seg_len, 1.0))
+    factor_elev = 1.0 + up_factor + down_factor
+    try:
+        secs_no_elev = secs / factor_elev if factor_elev != 0 else secs
+    except Exception:
+        secs_no_elev = secs
+    mult_temp_opt = temp_multiplier_nonlin(temp_ideal, opt_temp=temp_ideal, k_hot=k_temp_hot, k_cold=k_temp_cold)
+    try:
+        secs_flat_temp = secs_no_elev / mult_temp_opt if mult_temp_opt != 0 else secs_no_elev
+    except Exception:
+        secs_flat_temp = secs_no_elev
+    return max(secs_flat_temp, 0.0)
 
-    # compute recalibrated time for this reference: to 0% and 12°C baseline
-    def recalibrate_time(temps_hms, D_up, D_down, distance_m, temp_ideal=12.0, k_up=1.04, k_down=0.996, k_temp_hot=0.002, k_temp_cold=0.002):
-        secs = hms_to_seconds(temps_hms)
-        seg_len = distance_m if distance_m and distance_m > 0 else 1000.0
-        up_factor = (k_up - 1.0) * (D_up / max(seg_len, 1.0))
-        down_factor = (1.0 - k_down) * (D_down / max(seg_len, 1.0))
-        factor_elev = 1.0 + up_factor + down_factor
-        try:
-            secs_no_elev = secs / factor_elev if factor_elev != 0 else secs
-        except Exception:
-            secs_no_elev = secs
-        # neutralize temperature by dividing by multiplier at ideal (if !=1)
-        mult_temp_opt = temp_multiplier_nonlin(temp_ideal, opt_temp=temp_ideal, k_hot=k_temp_hot, k_cold=k_temp_cold)
-        try:
-            secs_flat_temp = secs_no_elev / mult_temp_opt if mult_temp_opt != 0 else secs_no_elev
-        except Exception:
-            secs_flat_temp = secs_no_elev
-        return max(secs_flat_temp, 0.0)
+# recalibrer la référence
+recal_secs = recalibrate_time(temps, dup, ddn, dist,
+                              temp_ideal=opt_temp, k_up=k_up, k_down=k_down,
+                              k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold)
+recal_hms = seconds_to_hms(recal_secs)
 
-    recal_secs = recalibrate_time(temps, dup, ddn, dist, temp_ideal=12.0, k_up=1.04, k_down=0.996, k_temp_hot=0.002, k_temp_cold=0.002)
-    recal_hms = seconds_to_hms(recal_secs)
+# ajouter à refs
+refs.append({
+    "distance": float(dist),
+    "temps": str(temps),
+    "D_up": float(dup),
+    "D_down": float(ddn),
+    "temps_recal": float(recal_secs),
+    "temps_recal_hms": recal_hms
+})
+
+# afficher à l’utilisateur
+st.markdown(f"Temps brut : `{temps}`  →  Temps recalibré (0% & {opt_temp}°C) : `{recal_hms}`")
 
     # store in refs list (will be used by the model)
     refs.append({

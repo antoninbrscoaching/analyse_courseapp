@@ -510,7 +510,7 @@ recal_secs = recalibrate_time(temps, dup, ddn, dist,
                               k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold)
 recal_hms = seconds_to_hms(recal_secs)
 
-# ajouter à refs
+# ajouter à refs (une seule fois)
 refs.append({
     "distance": float(dist),
     "temps": str(temps),
@@ -522,20 +522,6 @@ refs.append({
 
 # afficher à l’utilisateur
 st.markdown(f"Temps brut : `{temps}`  →  Temps recalibré (0% & {opt_temp}°C) : `{recal_hms}`")
-
-recal_secs = recalibrate_time(temps, dup, ddn, dist,
-                              temp_ideal=opt_temp, k_up=k_up, k_down=k_down,
-                              k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold)
-recal_hms = seconds_to_hms(recal_secs)
-
-refs.append({
-    "distance": float(dist),
-    "temps": str(temps),
-    "D_up": float(dup),
-    "D_down": float(ddn),
-    "temps_recal": float(recal_secs),
-    "temps_recal_hms": recal_hms
-})
 
 # -------------------------
 # Affichage des temps recalculés global (séparé)

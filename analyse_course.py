@@ -446,8 +446,8 @@ df_refs = pd.DataFrame([{
 } for r in refs_calibrated])
 st.dataframe(df_refs, use_container_width=True)
 
-    # fit model
-    a, K = fit_loglog_model(refs_for_fit)
+# fit model
+a, K = fit_loglog_model(refs_for_fit)
 
     # override if objective_time provided
     a_override = None

@@ -1,4 +1,4 @@
-# analyse_course.py
+# analyse_course.py (version corrigée)
 import streamlit as st
 import math
 import gpxpy
@@ -77,6 +77,153 @@ class SimplePoint:
         horiz = haversine_m(self.latitude, self.longitude, other.latitude, other.longitude)
         vert = (self.elevation - other.elevation)
         return math.sqrt(horiz * horiz + vert * vert)
+
+# -------------------------
+# Fonctions manquantes ajoutées
+# -------------------------
+def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
+    """
+    Simple non-linear temperature multiplier:
+    - if temp > opt_temp: multiplier = 1 + k_hot * (temp - opt)
+    - else: multiplier = 1 + k_cold * (opt - temp)
+    Guarantees multiplier >= 0.1 (safety).
+    """
+    try:
+        if temp is None:
+            return 1.0
+        diff = float(temp) - float(opt_temp)
+        if diff > 0:
+            mult = 1.0 + float(k_hot) * diff
+        else:
+            mult = 1.0 + float(k_cold) * (-diff)
+        return max(0.1, mult)
+    except Exception:
+        return 1.0
+
+def compute_total_and_cumdist(points):
+    """
+    Retourne (total_m, cumdists_list, method_str, debug_dict)
+    Méthode : simple somme des distances 3D entre points.
+    """
+    try:
+        if not points or len(points) < 2:
+            return 0.0, [0.0], "simple", {"n_pts": len(points)}
+        cum = [0.0]
+        total = 0.0
+        for i in range(1, len(points)):
+            d = (SimplePoint(points[i-1].latitude, points[i-1].longitude, getattr(points[i-1], "elevation", 0))
+                 .distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0))))
+            total += d
+            cum.append(total)
+        return total, cum, "3d_haversine", {"n_pts": len(points)}
+    except Exception as e:
+        return 0.0, [0.0], "error", {"error": str(e)}
+
+def apply_elevation_gradient_route(t_flat, d_up, d_down, segment_length_m=1000.0, k_up=1.04, k_down=0.996):
+    """
+    Applique un facteur de montée/descente sur le temps plat du segment.
+    Approche simple : factor = 1 + (k_up-1)*(d_up/seg_len) + (1-k_down)*(d_down/seg_len)
+    """
+    try:
+        seg_len = float(segment_length_m) if segment_length_m and segment_length_m > 0 else 1000.0
+        up_factor = (float(k_up) - 1.0) * (float(d_up) / seg_len)
+        down_factor = (1.0 - float(k_down)) * (float(d_down) / seg_len)
+        factor = 1.0 + up_factor + down_factor
+        return float(t_flat) * max(0.01, factor)
+    except Exception:
+        return float(t_flat)
+
+def fit_loglog_model(refs, k_up=1.04, k_down=0.996):
+    """
+    Ajuste simple log-log : total_seconds = a * (distance_km ** K)
+    On calcule a et K par régression linéaire sur log.
+    Si pas assez de refs, valeurs par défaut raisonnables.
+    Retourne (a, K) où a = seconds pour 1 km.
+    """
+    try:
+        X = []
+        Y = []
+        for r in refs:
+            d_m = r.get("distance", None)
+            t_raw = r.get("temps")  # peut être str "h:mm:ss" ou valeur déjà en secondes
+            if d_m is None or d_m <= 0:
+                continue
+            # obtenir seconds
+            if isinstance(t_raw, (int, float, np.number)):
+                secs = float(t_raw)
+            else:
+                secs = hms_to_seconds(str(t_raw))
+            if secs <= 0:
+                continue
+            d_km = float(d_m) / 1000.0
+            X.append(math.log(max(1e-6, d_km)))
+            Y.append(math.log(max(1e-6, secs)))
+        if len(X) >= 2:
+            coeffs = np.polyfit(X, Y, 1)  # Y = K * X + log(a)
+            K = float(coeffs[0])
+            loga = float(coeffs[1])
+            a = math.exp(loga)
+            # ensure sane values
+            if a <= 0 or math.isnan(a) or math.isinf(a):
+                a = 240.0  # 4min / km as fallback
+            if K <= -5 or K >= 5 or math.isnan(K) or math.isinf(K):
+                K = 1.0
+            return a, K
+        else:
+            # fallback: assume near-linear scaling (K = 1), a = mean secs for 1km from refs if any
+            if len(X) == 1:
+                d_km = math.exp(X[0])
+                secs = math.exp(Y[0])
+                # a such that secs = a * d_km^K => K=1 => a = secs / d_km
+                a = secs / max(1e-6, d_km)
+                return a, 1.0
+            # no refs: default a=240s (4:00/km), K=1
+            return 240.0, 1.0
+    except Exception:
+        return 240.0, 1.0
+
+def predict_time_flat(distance_m, a, K):
+    try:
+        d_km = float(distance_m) / 1000.0
+        return float(a) * (d_km ** float(K))
+    except Exception:
+        return float(a) * max(0.0, (float(distance_m) / 1000.0))
+
+def override_with_objective(distance_m, objective_time_hms, K):
+    """
+    Calcule a tel que a * (distance_km ** K) = objective_seconds.
+    """
+    try:
+        objective_seconds = hms_to_seconds(objective_time_hms)
+        d_km = float(distance_m) / 1000.0
+        if d_km <= 0:
+            return None
+        a = float(objective_seconds) / (d_km ** float(K))
+        return a
+    except Exception:
+        return None
+
+def get_temp_for_datetime(hourly_cache, dt):
+    """
+    hourly_cache placeholder: structure non imposée ici.
+    On renvoie None (pas de donnée) pour garder le code fonctionnel hors-ligne.
+    """
+    try:
+        return None
+    except Exception:
+        return None
+
+@st.cache_data(ttl=60)
+def fetch_open_meteo_hourly(lat, lon, start_date, end_date):
+    """
+    Placeholder qui renvoie {} si on ne veut pas appeler une API.
+    Si tu veux la météo réelle, on peut implémenter l'appel HTTP vers Open-Meteo ici.
+    """
+    try:
+        # Par défaut on ne fait pas de requête réseau (sécurité / offline)
+        return {}
+    except Exception:
+        return {}
 
 # -------------------------
 # PARSERS GPX / FIT / TCX
@@ -304,7 +451,6 @@ for i in range(1, st.session_state.n_refs + 1):
     default_dup = st.session_state.get(f"dup_{i}", 0.0)
     default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
     with c2:
-        # value read from session_state ensures imports reflect immediately
         dist = st.number_input(f"Dist {i} (m)", value=float(st.session_state.get(f"dist_{i}", default_dist)), key=f"dist_{i}")
     with c3:
         temps = st.text_input(f"Temps {i} (h:mm:ss)", value=str(st.session_state.get(f"temps_{i}", default_temps)), key=f"temps_{i}")
@@ -350,20 +496,15 @@ for i in range(1, st.session_state.n_refs + 1):
     # compute recalibrated time for this reference: to 0% and 12°C baseline
     def recalibrate_time(temps_hms, D_up, D_down, distance_m, temp_ideal=12.0, k_up=1.04, k_down=0.996, k_temp_hot=0.002, k_temp_cold=0.002):
         secs = hms_to_seconds(temps_hms)
-        # remove slope effect: invert apply_elevation_gradient_route by approximating using same coefficients
-        # easiest approach: compute flat_time by dividing by factor originally applied:
         seg_len = distance_m if distance_m and distance_m > 0 else 1000.0
-        # compute factor used to go from flat -> actual: factor = 1 + up_factor + down_factor (see function implementation)
         up_factor = (k_up - 1.0) * (D_up / max(seg_len, 1.0))
         down_factor = (1.0 - k_down) * (D_down / max(seg_len, 1.0))
         factor_elev = 1.0 + up_factor + down_factor
-        # neutralize elevation by dividing
         try:
             secs_no_elev = secs / factor_elev if factor_elev != 0 else secs
         except Exception:
             secs_no_elev = secs
-        # neutralize temperature: assume the recorded time used actual temp effect mult_temp -> to go to opt_temp divide by mult_temp_at_actual and multiply by mult_temp_at_opt (opt is baseline so just divide)
-        mult_temp_actual = 1.0  # unknown here (we don't have actual temp) - assume recorded done at actual temp => we can't invert; but user asked to recalibrate to ideal: easiest is to just divide by mult_temp_at_opt (neutralize)
+        # neutralize temperature by dividing by multiplier at ideal (if !=1)
         mult_temp_opt = temp_multiplier_nonlin(temp_ideal, opt_temp=temp_ideal, k_hot=k_temp_hot, k_cold=k_temp_cold)
         try:
             secs_flat_temp = secs_no_elev / mult_temp_opt if mult_temp_opt != 0 else secs_no_elev
@@ -371,7 +512,7 @@ for i in range(1, st.session_state.n_refs + 1):
             secs_flat_temp = secs_no_elev
         return max(secs_flat_temp, 0.0)
 
-    recal_secs = recalibrate_time(temps, dup, ddn, dist, temp_ideal=12.0)
+    recal_secs = recalibrate_time(temps, dup, ddn, dist, temp_ideal=12.0, k_up=1.04, k_down=0.996, k_temp_hot=0.002, k_temp_cold=0.002)
     recal_hms = seconds_to_hms(recal_secs)
 
     # store in refs list (will be used by the model)

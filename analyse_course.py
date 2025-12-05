@@ -483,15 +483,17 @@ for i in range(1, st.session_state.n_refs + 1):
                     temps_f = tcx_res.get("duration_hms")
         except Exception:
             pass
-
-    # Update session_state safely if file provided
-    if any(v is not None for v in [dist_f, temps_f, dup_f, ddn_f]):
-        update_ref_session_safe(i, dist_f, temps_f, dup_f, ddn_f)
-        # read back to local variables (ensure consistency)
-        dist = float(st.session_state.get(f"dist_{i}", dist))
-        dup = float(st.session_state.get(f"dup_{i}", dup))
-        ddn = float(st.session_state.get(f"ddn_{i}", ddn))
-        temps = str(st.session_state.get(f"temps_{i}", temps))
+            
+    # Si fichier importé, mettre à jour uniquement les variables locales
+if file_in:
+    if dist_f is not None:
+        dist = float(dist_f)
+    if dup_f is not None:
+        dup = float(dup_f)
+    if ddn_f is not None:
+        ddn = float(ddn_f)
+    if temps_f is not None:
+        temps = str(temps_f)
 
     # compute recalibrated time for this reference: to 0% and 12°C baseline
     def recalibrate_time(temps_hms, D_up, D_down, distance_m, temp_ideal=12.0, k_up=1.04, k_down=0.996, k_temp_hot=0.002, k_temp_cold=0.002):

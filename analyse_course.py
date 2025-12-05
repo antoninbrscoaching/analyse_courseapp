@@ -653,7 +653,7 @@ for r in refs_raw:
 
     # temps sous conditions idéales
     t_ideal = recalibrate_ref_to_ideal(
-        distance=r["distance"], D_up=r["D_up"], D_down=r["D_down"],
+        ref=r,
         k_up=k_up, k_down=k_down,
         k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold, opt_temp=opt_temp
     )
@@ -665,7 +665,7 @@ for r in refs_raw:
             lat_input, lon_input, datetime.combine(date_course, heure_course)
         )
         t_hist = recalibrate_ref_using_current(
-            distance=r["distance"], D_up=r["D_up"], D_down=r["D_down"],
+            ref=r,
             k_up=k_up, k_down=k_down,
             k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold,
             opt_temp=opt_temp, assumed_temp=temp_hist

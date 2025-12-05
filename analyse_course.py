@@ -18,6 +18,17 @@ st.set_page_config(page_title="Prédiction course route (refactor)", layout="wid
 st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé")
 
 # -------------------------
+# MÉTÉO HISTORIQUE (placeholder)
+# -------------------------
+def get_historical_temp(lat, lon, dt):
+    """
+    Placeholder : renvoie la température historique estimée pour une date/heure et une localisation.
+    À remplacer par un vrai appel API météo.
+    """
+    # Exemple simple : température pseudo-aléatoire basée sur le jour du mois
+    return 10.0 + (dt.day % 10)  # juste pour test
+
+# -------------------------
 # UTILITAIRES
 # -------------------------
 def hms_to_seconds(hms: str) -> int:
@@ -420,9 +431,20 @@ def run_prediction_df(distance_cible_km,
         xs = np.linspace(0, total_m, len(elev_list))
         new_x = np.linspace(0, total_m, len(dists_corr))
         elev_list = np.interp(new_x, xs, elev_list)
-
-    # prepare refs for fit (recalibrate using current coefficients or ideal)
-    refs_for_fit = prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, ideal_refs=ideal_refs)
+    
+# -------------------------
+# Affichage références recalibrées
+# -------------------------
+st.subheader("⏱️ Références recalibrées")
+df_refs = pd.DataFrame([{
+    "Distance (m)": r["distance"],
+    "D+ (m)": r["D_up"],
+    "D- (m)": r["D_down"],
+    "Temps brut": seconds_to_hms(r["temps_brut"]),
+    "Temps conditions idéales": seconds_to_hms(r["temps_ideal"]),
+    "Temps météo historique": seconds_to_hms(r["temps_hist"]) if r["temps_hist"] else None,
+} for r in refs_calibrated])
+st.dataframe(df_refs, use_container_width=True)
 
     # fit model
     a, K = fit_loglog_model(refs_for_fit)
@@ -614,6 +636,47 @@ for i in range(1, st.session_state.n_refs + 1):
 st.subheader("⏱️ Récap références (raw)")
 for idx, r in enumerate(refs_raw, start=1):
     st.write(f"Réf {idx} — Dist: {r['distance']:.0f} m | Brut: {r['temps']} | D+ {r['D_up']:.0f} m / D- {r['D_down']:.0f} m | Dur file: {r.get('duration_hms_file')}")
+
+# -------------------------
+# Recalibrage des références (brut / idéal / météo historique)
+# -------------------------
+refs_calibrated = []
+for r in refs_raw:
+    # temps brut
+    t_brut = hms_to_seconds(r['temps'])
+    
+    # temps sous conditions idéales
+    t_ideal = recalibrate_ref_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
+    
+    # temps avec météo historique si activé
+    temp_hist = None
+    if 'use_hist_refs' in locals() and use_hist_refs:
+        temp_hist = get_historical_temp(lat_input, lon_input, datetime.combine(date_course, heure_course))
+    t_hist = recalibrate_ref_using_current(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=temp_hist)
+    
+    refs_calibrated.append({
+        "distance": r["distance"],
+        "D_up": r["D_up"],
+        "D_down": r["D_down"],
+        "temps_brut": t_brut,
+        "temps_ideal": t_ideal,
+        "temps_hist": t_hist,
+        "origine": r.get("duration_hms_file", None)
+    })
+
+# -------------------------
+# Affichage références recalibrées
+# -------------------------
+st.subheader("⏱️ Références recalibrées")
+df_refs = pd.DataFrame([{
+    "Distance (m)": r["distance"],
+    "D+ (m)": r["D_up"],
+    "D- (m)": r["D_down"],
+    "Temps brut": seconds_to_hms(r["temps_brut"]),
+    "Temps conditions idéales": seconds_to_hms(r["temps_ideal"]),
+    "Temps météo historique": seconds_to_hms(r["temps_hist"]) if r["temps_hist"] else None,
+} for r in refs_calibrated])
+st.dataframe(df_refs, use_container_width=True)
 
 # -------------------------
 # Paramètres modèle UI

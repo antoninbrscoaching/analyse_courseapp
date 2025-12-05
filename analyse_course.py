@@ -657,11 +657,11 @@ k_temp_hot = 0.002   # coefficient chaleur
 k_temp_cold = 0.002  # coefficient froid
 opt_temp = 12.0      # température optimale en °C
 
-    # temps sous conditions idéales
-        t_ideal = recalibrate_ref_to_ideal(
-        ref=r,
-        k_up=k_up, k_down=k_down,
-        k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold, opt_temp=opt_temp
+# temps sous conditions idéales
+    t_ideal = recalibrate_ref_to_ideal(
+    ref=r,
+    k_up=k_up, k_down=k_down,
+    k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold, opt_temp=opt_temp
     )
 
     # temps avec météo historique si activé

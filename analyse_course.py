@@ -449,32 +449,33 @@ st.dataframe(df_refs, use_container_width=True)
 # fit model
 a, K = fit_loglog_model(refs_for_fit)
 
-    # override if objective_time provided
-    a_override = None
-    if objective_time_hms:
-        a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
-    baseline_seconds_per_km = (a_override if a_override is not None else a)
+# override if objective_time provided
+a_override = None
+if objective_time_hms:
+a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
+baseline_seconds_per_km = (a_override if a_override is not None else a)
 
-    # compute base flat total and per-km seconds
-    distance_cible_m = int(distance_cible_km * 1000)
-    base_flat_total = predict_time_flat(distance_cible_m, baseline_seconds_per_km, K)
-    base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
+# compute base flat total and per-km seconds
+distance_cible_m = int(distance_cible_km * 1000)
+base_flat_total = predict_time_flat(distance_cible_m, baseline_seconds_per_km, K)
+base_s_per_km_flat = base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
 
-    # create km markers for segments
-    km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
-    last_seg = total_corr - (int(total_corr // 1000) * 1000)
-    if last_seg > 1e-6:
-        km_marks.append(total_corr)
+# create km markers for segments
+km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
+last_seg = total_corr - (int(total_corr // 1000) * 1000)
+if last_seg > 1e-6:
+km_marks.append(total_corr)
 
-    segment_infos = []
-    cum_time_temp = 0.0
-    dt_depart = datetime.combine(date_course_local, heure_course_local)
-    for i, d in enumerate(km_marks):
-        # elevation at boundaries (resampled)
-        e_cur = float(np.interp(d, dists_corr, elev_list))
-        e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
-        d_up = max(0.0, e_cur - e_prev)
-        d_down = max(0.0, e_prev - e_cur)
+segment_infos = []
+cum_time_temp = 0.0
+dt_depart = datetime.combine(date_course_local, heure_course_local)
+for i, d in enumerate(km_marks):
+        
+# elevation at boundaries (resampled)
+e_cur = float(np.interp(d, dists_corr, elev_list))
+e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
+d_up = max(0.0, e_cur - e_prev)
+d_down = max(0.0, e_prev - e_cur)
 
         # segment length
         seg_length_m = 1000.0 if (i < len(km_marks) - 1 or last_seg < 1e-6) else (d - km_marks[-2] if len(km_marks) >= 2 else d)

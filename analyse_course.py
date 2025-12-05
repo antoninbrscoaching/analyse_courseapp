@@ -651,6 +651,12 @@ for r in refs_raw:
     # temps brut
     t_brut = hms_to_seconds(r['temps'])
 
+k_up = 1.04          # facteur de pente montante
+k_down = 0.996       # facteur de pente descendante
+k_temp_hot = 0.002   # coefficient chaleur
+k_temp_cold = 0.002  # coefficient froid
+opt_temp = 12.0      # température optimale en °C
+
     # temps sous conditions idéales
     t_ideal = recalibrate_ref_to_ideal(
         ref=r,

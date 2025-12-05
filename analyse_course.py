@@ -650,16 +650,27 @@ refs_calibrated = []
 for r in refs_raw:
     # temps brut
     t_brut = hms_to_seconds(r['temps'])
-    
+
     # temps sous conditions idéales
-    t_ideal = recalibrate_ref_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
-    
+    t_ideal = recalibrate_ref_to_ideal(
+        r["distance"], r["D_up"], r["D_down"], 
+        k_up=k_up, k_down=k_down, 
+        k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold, opt_temp=opt_temp
+    )
+
     # temps avec météo historique si activé
-    temp_hist = None
+    t_hist = None
     if 'use_hist_refs' in locals() and use_hist_refs:
-        temp_hist = get_historical_temp(lat_input, lon_input, datetime.combine(date_course, heure_course))
-    t_hist = recalibrate_ref_using_current(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=temp_hist)
-    
+        temp_hist = get_historical_temp(
+            lat_input, lon_input, datetime.combine(date_course, heure_course)
+        )
+        t_hist = recalibrate_ref_using_current(
+            r["distance"], r["D_up"], r["D_down"],
+            k_up=k_up, k_down=k_down,
+            k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold,
+            opt_temp=opt_temp, assumed_temp=temp_hist
+        )
+
     refs_calibrated.append({
         "distance": r["distance"],
         "D_up": r["D_up"],

@@ -546,7 +546,7 @@ for seg in segment_infos:
 
 df = pd.DataFrame(results)
 total_seconds = sum(s["t_raw"] for s in segment_infos) * scale
-return {
+    return {
     "df": df,
     "total_seconds": total_seconds,
     "total_human": seconds_to_hms(total_seconds),

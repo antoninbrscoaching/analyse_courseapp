@@ -593,22 +593,26 @@ for i in range(1, st.session_state.n_refs + 1):
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
+
     default_dist = st.session_state.get(f"dist_{i}", 5000 * i)
     default_temps = st.session_state.get(f"temps_{i}", "0:40:00")
     default_dup = st.session_state.get(f"dup_{i}", 0.0)
     default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
+
     with c2:
-        dist = st.number_input(f"Dist {i} (m)", value=float(st.session_state.get(f"dist_{i}", default_dist)), key=f"dist_{i}")
+        dist = st.number_input(f"Dist {i} (m)", value=float(default_dist), key=f"dist_{i}")
     with c3:
-        temps = st.text_input(f"Temps {i} (h:mm:ss)", value=str(st.session_state.get(f"temps_{i}", default_temps)), key=f"temps_{i}")
+        temps = st.text_input(f"Temps {i} (h:mm:ss)", value=str(default_temps), key=f"temps_{i}")
     with c4:
-        dup = st.number_input(f"D+ {i}", value=float(st.session_state.get(f"dup_{i}", default_dup)), key=f"dup_{i}")
+        dup = st.number_input(f"D+ {i}", value=float(default_dup), key=f"dup_{i}")
     with c5:
-        ddn = st.number_input(f"D- {i}", value=float(st.session_state.get(f"ddn_{i}", default_ddn)), key=f"ddn_{i}")
+        ddn = st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}") if use_file else None
 
-    # parse uploaded file (si présent)
+    # -------------------------
+    # 🔥 CORRECTION : si fichier importé → ignorer valeurs manuelles
+    # -------------------------
     duration_hms_file = None
     if file_in:
         name = getattr(file_in, "name", "") or ""
@@ -619,7 +623,7 @@ for i in range(1, st.session_state.n_refs + 1):
                     dist = data_fit.get("distance", dist)
                     dup = data_fit.get("D_up", dup)
                     ddn = data_fit.get("D_down", ddn)
-                    duration_hms_file = data_fit.get("duration_hms", None)
+                    duration_hms_file = data_fit.get("duration_hms")
             elif name.lower().endswith(".tcx"):
                 tcx_res = parse_tcx(file_in)
                 if tcx_res:
@@ -630,9 +634,15 @@ for i in range(1, st.session_state.n_refs + 1):
         except Exception:
             pass
 
+    # 👉 Temps utilisé = celui du fichier si présent, sinon temps manuel
+    if duration_hms_file:
+        temps_effectif = duration_hms_file
+    else:
+        temps_effectif = temps
+
     refs_raw.append({
         "distance": float(dist),
-        "temps": str(temps),
+        "temps": str(temps_effectif),      # << toujours le bon temps utilisé
         "D_up": float(dup),
         "D_down": float(ddn),
         "duration_hms_file": duration_hms_file

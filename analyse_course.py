@@ -22,7 +22,7 @@ st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé")
 # MÉTÉO - OpenWeather
 # -------------------------
 
-OW_API_KEY = st.secrets["openweather"]["c83ae86d99e7ec49fbf34f2d5393a405"]
+OW_API_KEY = st.secrets["openweather"]["api_key"]
 
 @st.cache_data(show_spinner=False)
 def get_weather_openweather(lat, lon, dt):

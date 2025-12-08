@@ -43,7 +43,9 @@ def hms_to_seconds(hms: str) -> int:
             h = 0
             m, s = parts
         elif len(parts) == 1:
-            h = 0; m = 0; s = parts[0]
+            h = 0
+            m = 0
+            s = parts[0]
         else:
             return 0
         return max(0, h * 3600 + m * 60 + s)
@@ -219,7 +221,10 @@ def parse_fit(file):
             dur = (times[-1] - times[0]).total_seconds()
             if dur > 0:
                 duration_hms = seconds_to_hms(dur)
-        return dict(distance=round(float(df["dist"].max()) if "dist" in df.columns else 0), D_up=round(dup), D_down=round(ddn), duration_hms=duration_hms)
+        return dict(distance=round(float(df["dist"].max()) if "dist" in df.columns else 0),
+                    D_up=round(dup),
+                    D_down=round(ddn),
+                    duration_hms=duration_hms)
     except Exception:
         return None
 
@@ -308,7 +313,6 @@ def clean_time_input(v):
 
 # -------------------------
 # Recalibration : applique correction élévation & température
-# On normalise le temps du ref pour obtenir le temps "plat & temp-opt" (temps_recal)
 # -------------------------
 def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     """
@@ -316,7 +320,6 @@ def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_tem
     On retire l'effet dénivelé en divisant par factor_elev,
     On considère conditions idéales pour la température (temp_mult = 1),
     donc temps_recal = secs / factor_elev
-    (Si tu avais une température par référence -> on pourrait retirer aussi l'effet température)
     """
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
     D_up = safe_float(ref.get("D_up", 0.0))
@@ -359,7 +362,7 @@ def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, op
         return max(0.0, secs_no_elev / mult_temp)
 
 # -------------------------
-# Prépare les références AVANT fit: calcule temps_recal selon mode
+# Prépare les références AVANT fit
 # -------------------------
 def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, ideal_refs=False):
     """
@@ -370,19 +373,19 @@ def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_
     """
     prepared = []
     for r in refs_input:
-        # fallback distance/temps
         d = safe_float(r.get("distance", 0.0))
-        # prefer duration from file if present
         file_dur = r.get("duration_hms_file")
         raw_t = file_dur if file_dur else r.get("temps", "0:00:00")
-        # choose recalibration strategy
         if ideal_refs:
-            secs_recal = recalibrate_ref_to_ideal({"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
-                                                 k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
+            secs_recal = recalibrate_ref_to_ideal(
+                {"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
+                k_up, k_down, k_temp_hot, k_temp_cold, opt_temp
+            )
         else:
-            # remove elevation effect, keep temp effect unknown (no assumed temp)
-            secs_recal = recalibrate_ref_using_current({"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
-                                                       k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None)
+            secs_recal = recalibrate_ref_using_current(
+                {"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
+                k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None
+            )
         prepared.append({
             "distance": float(d),
             "temps": float(secs_recal)
@@ -390,7 +393,7 @@ def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_
     return prepared
 
 # -------------------------
-# Calcul principal de prédiction (utilise refs recalées par prepare_refs_for_fit)
+# Calcul principal de prédiction
 # -------------------------
 def run_prediction_df(distance_cible_km,
                       refs_input,
@@ -432,19 +435,16 @@ def run_prediction_df(distance_cible_km,
         new_x = np.linspace(0, total_m, len(dists_corr))
         elev_list = np.interp(new_x, xs, elev_list)
 
-    # -------------------------
-    # Affichage références recalibrées
-    # -------------------------
-    st.subheader("⏱️ Références recalibrées")
-    df_refs = pd.DataFrame([{
-        "Distance (m)": r["distance"],
-        "D+ (m)": r["D_up"],
-        "D- (m)": r["D_down"],
-        "Temps brut": seconds_to_hms(r["temps_brut"]),
-        "Temps conditions idéales": seconds_to_hms(r["temps_ideal"]),
-        "Temps météo historique": seconds_to_hms(r["temps_hist"]) if r["temps_hist"] else None,
-    } for r in refs_calibrated])
-    st.dataframe(df_refs, use_container_width=True)
+    # prépare les références pour le fit
+    refs_for_fit = prepare_refs_for_fit(
+        refs_input,
+        k_up=k_up,
+        k_down=k_down,
+        k_temp_hot=k_temp_hot,
+        k_temp_cold=k_temp_cold,
+        opt_temp=opt_temp,
+        ideal_refs=ideal_refs,
+    )
 
     # fit model
     a, K = fit_loglog_model(refs_for_fit)
@@ -493,9 +493,10 @@ def run_prediction_df(distance_cible_km,
         else:
             t_km_after_fatigue = t_km_after_elev
 
-        # placeholder temperature at passage
+        # placeholder température au passage
         passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_km_after_fatigue / 2.0)
-        temp_at_passage = None
+        temp_at_passage = None  # placeholder
+
         if apply_temp and temp_at_passage is not None:
             mult_temp = temp_multiplier_nonlin(
                 temp_at_passage, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold
@@ -567,8 +568,8 @@ if gpx_file:
     gpx, points = parse_gpx_points(gpx_file)
     if points:
         total_m_tmp = sum(SimplePoint(points[i-1].latitude, points[i-1].longitude, getattr(points[i-1], "elevation", 0))
-                        .distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0)))
-                        for i in range(1, len(points)))
+                          .distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0)))
+                          for i in range(1, len(points)))
         st.session_state["gpx_original_distance_km"] = total_m_tmp / 1000.0
     else:
         st.session_state["gpx_original_distance_km"] = None
@@ -577,7 +578,7 @@ st.header("2️⃣ Courses de référence (manuel ou FIT/TCX)")
 if "n_refs" not in st.session_state:
     st.session_state.n_refs = 3
 
-cols = st.columns([1,1])
+cols = st.columns([1, 1])
 with cols[0]:
     if st.button("➕ Ajouter (max 6)") and st.session_state.n_refs < 6:
         st.session_state.n_refs += 1
@@ -605,7 +606,7 @@ for i in range(1, st.session_state.n_refs + 1):
     with c5:
         ddn = st.number_input(f"D- {i}", value=float(st.session_state.get(f"ddn_{i}", default_ddn)), key=f"ddn_{i}")
     with c6:
-        file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit","tcx"], key=f"fileref_{i}") if use_file else None
+        file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}") if use_file else None
 
     # parse uploaded file (si présent)
     duration_hms_file = None
@@ -615,7 +616,6 @@ for i in range(1, st.session_state.n_refs + 1):
             if name.lower().endswith(".fit"):
                 data_fit = parse_fit(file_in)
                 if data_fit:
-                    # prefer file values when available
                     dist = data_fit.get("distance", dist)
                     dup = data_fit.get("D_up", dup)
                     ddn = data_fit.get("D_down", ddn)
@@ -647,41 +647,42 @@ for idx, r in enumerate(refs_raw, start=1):
 # Recalibrage des références (brut / idéal / météo historique)
 # -------------------------
 refs_calibrated = []
+
+# coefficients par défaut pour l'affichage initial
+k_up_ref = 1.04          # facteur de pente montante
+k_down_ref = 0.996       # facteur de pente descendante
+k_temp_hot_ref = 0.002   # coefficient chaleur
+k_temp_cold_ref = 0.002  # coefficient froid
+opt_temp_ref = 12.0      # température optimale en °C
+
 for r in refs_raw:
     # temps brut
-    t_brut = hms_to_seconds(r['temps'])
+    t_brut = hms_to_seconds(r["temps"])
 
-k_up = 1.04          # facteur de pente montante
-k_down = 0.996       # facteur de pente descendante
-k_temp_hot = 0.002   # coefficient chaleur
-k_temp_cold = 0.002  # coefficient froid
-opt_temp = 12.0      # température optimale en °C
-
-# temps sous conditions idéales
+    # temps sous conditions idéales
     t_ideal = recalibrate_ref_to_ideal(
-t_ideal = recalibrate_ref_to_ideal(
-    ref=r,
-    k_up=k_up, k_down=k_down,
-    k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold, opt_temp=opt_temp
+        ref=r,
+        k_up=k_up_ref,
+        k_down=k_down_ref,
+        k_temp_hot=k_temp_hot_ref,
+        k_temp_cold=k_temp_cold_ref,
+        opt_temp=opt_temp_ref
     )
-    k_up=k_up,
-    k_down=k_down,
-    k_temp_hot=k_temp_hot,
-    k_temp_cold=k_temp_cold,
-    opt_temp=opt_temp
-)
 
-    # temps avec météo historique si activé
+    # temps avec météo historique si activé (placeholder)
     t_hist = None
-    if 'use_hist_refs' in locals() and use_hist_refs:
+    if "use_hist_refs" in locals() and use_hist_refs:
         temp_hist = get_historical_temp(
             lat_input, lon_input, datetime.combine(date_course, heure_course)
         )
         t_hist = recalibrate_ref_using_current(
             ref=r,
-            k_up=k_up, k_down=k_down,
-            k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold,
-            opt_temp=opt_temp, assumed_temp=temp_hist
+            k_up=k_up_ref,
+            k_down=k_down_ref,
+            k_temp_hot=k_temp_hot_ref,
+            k_temp_cold=k_temp_cold_ref,
+            opt_temp=opt_temp_ref,
+            assumed_temp=temp_hist
         )
 
     refs_calibrated.append({
@@ -719,7 +720,8 @@ with c1:
         k_up = st.number_input("Coefficient montée (k_up)", value=1.040, format="%.3f", step=0.001)
         k_down = st.number_input("Coefficient descente (k_down)", value=0.996, format="%.3f", step=0.001)
     else:
-        k_up = 1.0; k_down = 1.0
+        k_up = 1.0
+        k_down = 1.0
 with c2:
     use_temp_coeff = st.checkbox("Activer coefficients température 🌡️", value=True)
     if use_temp_coeff:
@@ -727,7 +729,9 @@ with c2:
         k_temp_cold = st.number_input("Sensibilité froide (k_temp_cold)", value=0.002, format="%.4f", step=0.0005)
         opt_temp = st.number_input("Température optimale (°C)", value=12.0, format="%.1f", step=0.5)
     else:
-        k_temp_hot = 0.0; k_temp_cold = 0.0; opt_temp = 12.0
+        k_temp_hot = 0.0
+        k_temp_cold = 0.0
+        opt_temp = 12.0
 
 col1, col2 = st.columns(2)
 with col1:
@@ -850,7 +854,7 @@ if "res_base" in st.session_state or "res_forced" in st.session_state:
     with right:
         st.subheader("🎯 Forcé (distance/temps forcés)")
         if forced:
-            dist_display = (distance_forced_km if (force_distance_checkbox and distance_forced_km) else round(forced['distance_gpx_km'],3))
+            dist_display = (distance_forced_km if (force_distance_checkbox and distance_forced_km) else round(forced['distance_gpx_km'], 3))
             avg_pace_forced = forced["total_seconds"] / max(float(dist_display), 1e-6)
             st.write(f"Distance cible: {dist_display} km")
             st.write(f"Temps total (forcé): {forced['total_human']}  ({pace_seconds_to_str_per_km(avg_pace_forced)} / km)")
@@ -885,7 +889,7 @@ if gpx_file and points:
             map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
             initial_view_state=view,
             layers=[path_layer],
-            tooltip={"text":"{name}"}
+            tooltip={"text": "{name}"}
         )
         st.pydeck_chart(deck, use_container_width=True)
 
@@ -893,8 +897,6 @@ if gpx_file and points:
         st.subheader("📊 Profil d'altitude")
         plt.figure(figsize=(10, 4))
 
-        total_m, cumdists, method_used, debug = None, None, None, None
-        # reuse compute: quick compute to get cumulative distances
         total_m = 0.0
         cumdists = [0.0]
         for i in range(1, len(points)):

@@ -473,7 +473,7 @@ k_temp_cold = 0.002  # coefficient froid
 opt_temp = 12.0      # température optimale en °C
 
 # temps sous conditions idéales
-t_ideal = recalibrate_ref_to_ideal(
+t_ideal = recalibrate_to_ideal(
     ref=r,
     k_up=k_up,
     k_down=k_down,
@@ -482,21 +482,22 @@ t_ideal = recalibrate_ref_to_ideal(
     opt_temp=opt_temp
 )
 
-# temps avec météo historique si activé
+# météo historique
 t_hist = None
 if 'use_hist_refs' in locals() and use_hist_refs:
     temp_hist = get_historical_temp(
         lat_input, lon_input, datetime.combine(date_course, heure_course)
     )
-    t_hist = recalibrate_ref_using_current(
+    temp_mult = temp_multiplier_nonlin(temp_hist, opt_temp, k_temp_hot, k_temp_cold)
+
+    t_hist = recalibrate_to_ideal(
         ref=r,
         k_up=k_up,
         k_down=k_down,
         k_temp_hot=k_temp_hot,
         k_temp_cold=k_temp_cold,
-        opt_temp=opt_temp,
-        assumed_temp=temp_hist
-    )
+        opt_temp=opt_temp
+    ) * temp_mult
 
 refs_calibrated.append({
     "distance": r["distance"],

@@ -578,27 +578,25 @@ def prepare_refs_for_fit(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_te
 st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
 points = None
+
 if gpx_file:
-    gpx, points = parse_gpx_points(gpx_file)
-    if points:
-        total_m_tmp = sum(SimplePoint(points[i-1].latitude, points[i-1].longitude, getattr(points[i-1], "elevation", 0))
-                        .distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0)))
-                        for i in range(1, len(points)))
-        st.session_state["gpx_original_distance_km"] = total_m_tmp / 1000.0
-    else:
+    try:
+        # Convertir le fichier en string avant parsing
+        gpx_content = gpx_file.read().decode("utf-8")
+        gpx, points = parse_gpx_points(io.StringIO(gpx_content))
+
+        if points:
+            total_m_tmp = sum(
+                SimplePoint(points[i-1].latitude, points[i-1].longitude, getattr(points[i-1], "elevation", 0))
+                .distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0)))
+                for i in range(1, len(points))
+            )
+            st.session_state["gpx_original_distance_km"] = total_m_tmp / 1000.0
+        else:
+            st.session_state["gpx_original_distance_km"] = None
+    except Exception as e:
+        st.error(f"Erreur lors de l'import GPX : {e}")
         st.session_state["gpx_original_distance_km"] = None
-
-st.header("2️⃣ Courses de référence (manuel ou FIT/TCX)")
-if "n_refs" not in st.session_state:
-    st.session_state.n_refs = 3
-
-cols = st.columns([1,1])
-with cols[0]:
-    if st.button("➕ Ajouter (max 6)") and st.session_state.n_refs < 6:
-        st.session_state.n_refs += 1
-with cols[1]:
-    if st.button("➖ Retirer") and st.session_state.n_refs > 1:
-        st.session_state.n_refs -= 1
 
 # Collect raw refs (no recalculation here)
 refs_raw = []

@@ -63,7 +63,6 @@ def get_weather_openweather(lat, lon, dt):
         st.error(f"Erreur météo OpenWeather : {e}")
         return None
 
-
 # -------------------------
 # MÉTÉO HISTORIQUE - Open-Meteo (Références)
 # -------------------------
@@ -101,79 +100,40 @@ def get_weather_openmeteo_day(lat, lon, date_obj):
 
     return times, temps, winds, hums
 
-@st.cache_data(show_spinner=False)
-def get_weather_openmeteo_history(lat, lon, dt):
-    """
-    Récupère météo historique (temp, vent, humidité)
-    à l'heure la plus proche d'un datetime donné.
-    Utilise Open-Meteo (archive journalière).
-    """
-    if dt is None:
-        return None
 
-    day_str = dt.strftime("%Y-%m-%d")
+def get_avg_weather_for_period(lat, lon, start_dt, end_dt):
+    """
+    Appelle Open-Meteo une seule fois pour la journée,
+    puis calcule la moyenne météo entre start_dt et end_dt.
+    Utilisé pour FIT/TCX afin d'éviter un appel par point.
+    """
+    if start_dt is None or end_dt is None:
+        return None, None, None
 
-    url = (
-        "https://archive-api.open-meteo.com/v1/archive?"
-        f"latitude={lat}&longitude={lon}"
-        f"&start_date={day_str}&end_date={day_str}"
-        "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
-        "&timezone=UTC"
+    meteo_day = get_weather_openmeteo_day(lat, lon, start_dt.date())
+    if not meteo_day:
+        return None, None, None
+
+    times, temps, winds, hums = meteo_day
+
+    temps_sel = []
+    winds_sel = []
+    hums_sel = []
+
+    for t, T, W, H in zip(times, temps, winds, hums):
+        if start_dt <= t <= end_dt:
+            temps_sel.append(T)
+            winds_sel.append(W)
+            hums_sel.append(H)
+
+    if not temps_sel:
+        return None, None, None
+
+    return (
+        float(np.mean(temps_sel)),
+        float(np.mean(winds_sel)),
+        float(np.mean(hums_sel)),
     )
-
-    try:
-        r = requests.get(url)
-        data = r.json()
-    except:
-        return None
-
-    if "hourly" not in data:
-        return None
-
-    times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
-    temps = data["hourly"]["temperature_2m"]
-    winds = data["hourly"]["wind_speed_10m"]
-    hums  = data["hourly"]["relativehumidity_2m"]
-
-    diffs = np.abs(np.array(times) - dt)
-    idx = int(np.argmin(diffs))
-
-    return {
-        "temp": temps[idx],
-        "wind": winds[idx],
-        "humidity": hums[idx],
-    }
-
-def get_weather_from_day_cache(times, temps, winds, hums, dt_point):
-    if dt_point is None:
-        return None
-    try:
-        diffs = np.abs(np.array(times) - dt_point)
-        idx = int(np.argmin(diffs))
-        return {
-            "temp": temps[idx],
-            "wind": winds[idx],
-            "humidity": hums[idx],
-        }
-    except Exception:
-        return None
-
-# -------------------------
-# MÉTÉO HISTORIQUE (fallback simple pour recalibrage)
-# -------------------------
-def get_historical_temp(lat, lon, dt):
-    """
-    Fallback de température historique pour le recalibrage des références
-    quand on n'a pas de moyenne extraite du FIT/TCX.
-
-    → On essaye d'abord Open-Meteo, sinon on retourne une valeur "raisonnable".
-    """
-    meteo = get_weather_openmeteo_history(lat, lon, dt) if dt else None
-    if meteo and meteo.get("temp") is not None:
-        return float(meteo["temp"])
-    # dernier recours : ancienne valeur fake
-    return 10.0 + (dt.day % 10) if dt else 15.0
-
 
 # -------------------------
 # UTILITAIRES
@@ -372,31 +332,25 @@ def parse_fit(file):
         if not records:
             return None
 
-        # ---------- MÉTÉO HISTORIQUE ----------
-        first_dt = next((t for t in times_points if t), None)
-        lat0, lon0 = records[0][0], records[0][1]
-
-        temps_list, winds_list, hums_list = [], [], []
-
-        if first_dt:
-            for t in times_points:
-                meteo = get_weather_openmeteo_history(lat0, lon0, t)
-                if meteo:
-                    if meteo["temp"] is not None: temps_list.append(meteo["temp"])
-                    if meteo["wind"] is not None: winds_list.append(meteo["wind"])
-                    if meteo["humidity"] is not None: hums_list.append(meteo["humidity"])
-
-        avg_temp = float(np.mean(temps_list)) if temps_list else None
-        avg_wind = float(np.mean(winds_list)) if winds_list else None
-        avg_hum  = float(np.mean(hums_list)) if hums_list else None
-
-        # ---------- DISTANCE / D+ / D- ----------
+        # Distance / dénivelé
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
         dup = float(np.sum(np.diff(df.elev).clip(min=0)))
         ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
 
         valid_times = [t for t in times_points if t]
-        duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds()) if len(valid_times) >= 2 else None
+        if len(valid_times) >= 2:
+            start_dt = valid_times[0]
+            end_dt = valid_times[-1]
+            duration_hms = seconds_to_hms((end_dt - start_dt).total_seconds())
+        else:
+            start_dt = end_dt = None
+            duration_hms = None
+
+        # METEO — UNE SEULE REQUÊTE
+        avg_temp, avg_wind, avg_hum = None, None, None
+        if start_dt and end_dt:
+            lat0, lon0 = records[0][0], records[0][1]
+            avg_temp, avg_wind, avg_hum = get_avg_weather_for_period(lat0, lon0, start_dt, end_dt)
 
         return {
             "distance": round(float(df["dist"].max())),
@@ -424,10 +378,11 @@ def parse_tcx(file):
     ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
     tps = root.findall(".//tcx:Trackpoint", ns)
     if not tps:
-        st.error("Aucun Trackpoint trouvé dans le TCX.")
         return None
 
-    pts, elevs, times = [], [], []
+    pts = []
+    elevs = []
+    times = []
 
     for tp in tps:
         lat = tp.find("tcx:Position/tcx:LatitudeDegrees", ns)
@@ -453,29 +408,28 @@ def parse_tcx(file):
         elevs.append(elev)
         times.append(t)
 
-    # ---------- MÉTÉO HISTORIQUE ----------
-    temps_list, winds_list, hums_list = [], [], []
-    if times and times[0]:
-        lat0, lon0 = pts[0].latitude, pts[0].longitude
-        for t in times:
-            meteo = get_weather_openmeteo_history(lat0, lon0, t)
-            if meteo:
-                if meteo["temp"] is not None: temps_list.append(meteo["temp"])
-                if meteo["wind"] is not None: winds_list.append(meteo["wind"])
-                if meteo["humidity"] is not None: hums_list.append(meteo["humidity"])
+    if len(pts) < 2:
+        return None
 
-    avg_temp = float(np.mean(temps_list)) if temps_list else None
-    avg_wind = float(np.mean(winds_list)) if winds_list else None
-    avg_hum  = float(np.mean(hums_list)) if hums_list else None
-
-    # ---------- DISTANCE / D+ / D- ----------
+    # Distance / dénivelé
     total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1, len(pts)))
-    elev_arr = np.array(elevs)
-    dup = float(np.sum(np.diff(elev_arr).clip(min=0)))
-    ddn = float(-np.sum(np.diff(elev_arr).clip(max=0)))
+    dup = float(np.sum(np.diff(np.array(elevs)).clip(min=0)))
+    ddn = float(-np.sum(np.diff(np.array(elevs)).clip(max=0)))
 
     valid_times = [t for t in times if t]
-    duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds()) if len(valid_times) >= 2 else None
+    if len(valid_times) >= 2:
+        start_dt = valid_times[0]
+        end_dt = valid_times[-1]
+        duration_hms = seconds_to_hms((end_dt - start_dt).total_seconds())
+    else:
+        start_dt = end_dt = None
+        duration_hms = None
+
+    # METEO — UNE SEULE REQUÊTE
+    avg_temp, avg_wind, avg_hum = None, None, None
+    if start_dt and end_dt:
+        lat0, lon0 = pts[0].latitude, pts[0].longitude
+        avg_temp, avg_wind, avg_hum = get_avg_weather_for_period(lat0, lon0, start_dt, end_dt)
 
     return {
         "points": pts,

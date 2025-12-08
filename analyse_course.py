@@ -354,6 +354,7 @@ def parse_fit(file):
             "weather": meteo,
         })
 
+try:
     # calcul distance / D+ / D-
     df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
     dup = float(np.sum(np.diff(df.elev).clip(min=0)))
@@ -372,9 +373,10 @@ def parse_fit(file):
         "duration_hms": duration_hms,
         "weather_points": weather_points,
     }
-    except Exception as e:
-        st.error(f"Erreur FIT : {e}")
-        return None
+
+except Exception as e:
+    st.error(f"Erreur FIT : {e}")
+    return None
 
 def parse_tcx(file):
     """

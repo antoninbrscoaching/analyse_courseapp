@@ -265,21 +265,30 @@ def clean_time_input(v):
 # -------------------------
 def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     """
-    ref: dict avec 'distance' (m), 'temps' (h:mm:ss or secs), 'D_up', 'D_down'
-    On retire l'effet dénivelé en divisant par factor_elev,
-    On considère conditions idéales pour la température (temp_mult = 1),
-    donc temps_recal = secs / factor_elev
-    (Si tu avais une température par référence -> on pourrait retirer aussi l'effet température)
+    Retire l'effet du dénivelé et considère conditions idéales de température.
     """
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
     seg_len = seg_len if seg_len > 0 else 1000.0
+
     up_factor = (k_up - 1.0) * (D_up / seg_len)
     down_factor = (1.0 - k_down) * (D_down / seg_len)
     factor_elev = 1.0 + up_factor + down_factor
+    if factor_elev == 0:
+        factor_elev = 1.0
+
+    secs_no_elev = secs / factor_elev
+    # Conditions idéales pour la température
+    secs_flat_ideal = secs_no_elev
+    return max(0.0, secs_flat_ideal)
+
+
 def recalibrate_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
+    """
+    Recalibre un temps brut vers conditions idéales (plat + température optimale).
+    """
     secs = hms_to_seconds(ref["temps_brut"])
     d = safe_float(ref["distance"])
     up = safe_float(ref["D_up"])
@@ -291,29 +300,31 @@ def recalibrate_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     factor_elev = 1 + up_factor + down_factor
     if factor_elev == 0:
         factor_elev = 1.0
+
     secs_no_elev = secs / factor_elev
-    # conditions idéales pour la température -> mult_temp = 1
+    # Conditions idéales pour la température
     secs_flat_ideal = secs_no_elev
     return max(0.0, secs_flat_ideal)
-        factor_elev = 1
+
 
 def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None):
     """
-    Recalibre la référence en retirant l'effet de l'élévation et de la température
-    en supposant qu'on connaît la température réelle (optional).
-    Si assumed_temp est None => on ne retire pas l'effet température (temp_mult = 1).
+    Recalibre la référence en retirant l'effet de l'élévation et éventuellement la température.
     """
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
     seg_len = seg_len if seg_len > 0 else 1000.0
+
     up_factor = (k_up - 1.0) * (D_up / seg_len)
     down_factor = (1.0 - k_down) * (D_down / seg_len)
     factor_elev = 1.0 + up_factor + down_factor
     if factor_elev == 0:
         factor_elev = 1.0
+
     secs_no_elev = secs / factor_elev
+
     if assumed_temp is None:
         return max(0.0, secs_no_elev)
     else:
@@ -321,9 +332,6 @@ def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, op
         if mult_temp == 0:
             mult_temp = 1.0
         return max(0.0, secs_no_elev / mult_temp)
-    # Plat & 12°C = conditions idéales
-    ideal_secs = secs / factor_elev
-    return ideal_secs
 
 # -------------------------
 # Prépare les références AVANT fit: calcule temps_recal selon mode

@@ -330,14 +330,13 @@ def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, op
 
 # -------------------------
 # Prépare les références AVANT fit: calcule temps_recal selon mode
-# TABLEAU REFS RAW + IDEAL
 # -------------------------
 def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, ideal_refs=False):
     """
-    refs_input: liste dicts {distance, temps, D_up, D_down, maybe temps_fichier...}
+    refs_input: liste de dicts {distance, temps, D_up, D_down, maybe temps_fichier...}
     Si ideal_refs True => on normalise vers 0% & opt_temp (on retire élévation, temp assume opt)
     Si False => on normalise en retirant l'effet élévation (mais en gardant température inconnue)
-    Retourne liste with 'distance' (m) and 'temps' (secs as float)
+    Retourne liste avec 'distance' (m) et 'temps' (secs as float)
     """
     prepared = []
     for r in refs_input:
@@ -346,24 +345,35 @@ def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_
         # prefer duration from file if present
         file_dur = r.get("duration_hms_file")
         raw_t = file_dur if file_dur else r.get("temps", "0:00:00")
+        
         # choose recalibration strategy
         if ideal_refs:
-            secs_recal = recalibrate_ref_to_ideal({"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
-                                                 k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
+            secs_recal = recalibrate_ref_to_ideal(
+                {"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
+                k_up, k_down, k_temp_hot, k_temp_cold, opt_temp
+            )
         else:
             # remove elevation effect, keep temp effect unknown (no assumed temp)
-            secs_recal = recalibrate_ref_using_current({"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
-                                                       k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None)
+            secs_recal = recalibrate_ref_using_current(
+                {"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
+                k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None
+            )
+        
         prepared.append({
             "distance": float(d),
             "temps": float(secs_recal)
+        })
+    return prepared
+
+
 def build_ref_table(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     rows = []
     for r in refs_raw:
         t_brut = r["temps_brut"]
         secs_brut = hms_to_seconds(t_brut)
 
-        secs_ideal = recalibrate_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
+        # Correction ici : utiliser la fonction existante recalibrate_ref_to_ideal
+        secs_ideal = recalibrate_ref_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
 
         rows.append({
             "Nom": r["nom"],
@@ -374,7 +384,7 @@ def build_ref_table(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
             "Temps idéal": seconds_to_hms(secs_ideal),
             "Δ (%)": round((secs_ideal - secs_brut) / secs_brut * 100, 2) if secs_brut > 0 else 0
         })
-    return prepared
+    return rows
 
 # -------------------------
 # Calcul principal de prédiction (utilise refs recalées par prepare_refs_for_fit)

@@ -301,66 +301,39 @@ def gpx_to_df(points):
     ])
 
 def parse_fit(file):
-    file.seek(0)
-    fit = FitFile(file)
-    fit.parse()
-
-    records = []
-    times_points = []
-    weather_points = []
-
-    # --- on récupère tous les points GPS/temps ---
-    for msg in fit.get_messages("record"):
-        vals = {d.name: d.value for d in msg}
-        lat_raw = vals.get("position_lat")
-        lon_raw = vals.get("position_long")
-        ts = vals.get("timestamp")
-        elev = vals.get("altitude", 0)
-        dist = vals.get("distance", 0)
-
-        if lat_raw and lon_raw:
-            lat = lat_raw * (180 / 2**31)
-            lon = lon_raw * (180 / 2**31)
-            dt_local = ts.replace(tzinfo=None) if ts else None
-
-            records.append((lat, lon, elev, dist))
-            times_points.append(dt_local)
-
-    if not records:
-        return None
-
-    # --- METEO : 1 requête ---
-    first_valid_dt = next((t for t in times_points if t), None)
-    if first_valid_dt:
-        meteo_day = get_weather_openmeteo_day(records[0][0], records[0][1], first_valid_dt.date())
-        if meteo_day:
-            times_m, temps_m, winds_m, hums_m = meteo_day
-        else:
-            times_m = temps_m = winds_m = hums_m = None
-    else:
-        times_m = temps_m = winds_m = hums_m = None
-
-    # --- assignation météo ---
-    for (lat, lon, elev, dist), t in zip(records, times_points):
-        if times_m:
-            meteo = get_weather_from_day_cache(times_m, temps_m, winds_m, hums_m, t)
-        else:
-            meteo = None
-
-        weather_points.append({
-            "lat": lat,
-            "lon": lon,
-            "time": t,
-            "weather": meteo,
-        })
-
     try:
-        # calcul distance / D+ / D-
+        file.seek(0)
+        fit = FitFile(file)
+        fit.parse()
+
+        records = []
+        times_points = []
+
+        for msg in fit.get_messages("record"):
+            vals = {d.name: d.value for d in msg}
+
+            lat_raw = vals.get("position_lat")
+            lon_raw = vals.get("position_long")
+            ts = vals.get("timestamp")
+            elev = vals.get("altitude", 0)
+            dist = vals.get("distance", 0)
+
+            if lat_raw and lon_raw:
+                lat = lat_raw * (180 / 2**31)
+                lon = lon_raw * (180 / 2**31)
+                dt_local = ts.replace(tzinfo=None) if ts else None
+
+                records.append((lat, lon, elev, dist))
+                times_points.append(dt_local)
+
+        if not records:
+            return None
+
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
+
         dup = float(np.sum(np.diff(df.elev).clip(min=0)))
         ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
 
-        # durée
         valid_times = [t for t in times_points if t]
         duration_hms = None
         if len(valid_times) >= 2:
@@ -371,7 +344,7 @@ def parse_fit(file):
             "D_up": round(dup),
             "D_down": round(ddn),
             "duration_hms": duration_hms,
-            "weather_points": weather_points,
+            "weather_points": [],   # météo désactivée pour version stable
         }
 
     except Exception as e:
@@ -379,63 +352,64 @@ def parse_fit(file):
         return None
 
 def parse_tcx(file):
-    """
-    Parse TCX et retourne points (SimplePoint), distance, D+, D-, durée,
-    et points météo historique via Open-Meteo.
-    """
     try:
         file.seek(0)
-        data = file.read()
-        root = ET.fromstring(data)
-    except Exception:
+        tree = ET.parse(file)
+        root = tree.getroot()
+    except Exception as e:
+        st.error(f"Erreur ouverture TCX : {e}")
         return None
 
-    trackpoints = root.findall('.//{*}Trackpoint')
-    pts, times, elevs = [], [], []
-    weather_points = []
+    ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
+    tps = root.findall(".//tcx:Trackpoint", ns)
 
-    for tp in trackpoints:
-        lat_elem = tp.find('.//{*}LatitudeDegrees')
-        lon_elem = tp.find('.//{*}LongitudeDegrees')
-        alt_elem = tp.find('.//{*}AltitudeMeters')
-        time_elem = tp.find('.//{*}Time')
-        if lat_elem is None or lon_elem is None:
+    if not tps:
+        st.error("Aucun Trackpoint trouvé dans le TCX.")
+        return None
+
+    pts = []
+    elevs = []
+    times = []
+
+    for tp in tps:
+        lat = tp.find("tcx:Position/tcx:LatitudeDegrees", ns)
+        lon = tp.find("tcx:Position/tcx:LongitudeDegrees", ns)
+        ele = tp.find("tcx:AltitudeMeters", ns)
+        tim = tp.find("tcx:Time", ns)
+
+        if lat is None or lon is None:
             continue
-        lat = float(lat_elem.text)
-        lon = float(lon_elem.text)
-        elev = float(alt_elem.text) if alt_elem is not None and alt_elem.text else 0.0
+
+        lat = float(lat.text)
+        lon = float(lon.text)
+        elev = float(ele.text) if ele is not None else 0.0
+
         t = None
-        if time_elem is not None and time_elem.text:
+        if tim is not None:
             try:
-                t = datetime.fromisoformat(time_elem.text.replace('Z', '+00:00')).replace(tzinfo=None)
-                times.append(t)
-            except Exception:
-                t = None
-        elevs.append(elev)
+                t = datetime.fromisoformat(tim.text.replace("Z", "+00:00")).replace(tzinfo=None)
+            except:
+                pass
+
         pts.append(SimplePoint(lat, lon, elev, t))
+        elevs.append(elev)
+        times.append(t)
 
-        meteo = get_weather_openmeteo_history(lat, lon, t) if t else None
-        weather_points.append({
-            "lat": lat,
-            "lon": lon,
-            "time": t,
-            "weather": meteo,
-        })
-
-    if not pts:
+    if len(pts) < 2:
         return None
 
     total = 0.0
     for i in range(1, len(pts)):
         total += pts[i].distance_3d(pts[i-1])
 
-    dup = float(np.sum(np.diff(elevs).clip(min=0))) if elevs else 0.0
-    ddn = float(-np.sum(np.diff(elevs).clip(max=0))) if elevs else 0.0
+    elev_arr = np.array(elevs)
+    dup = float(np.sum(np.diff(elev_arr).clip(min=0)))
+    ddn = float(-np.sum(np.diff(elev_arr).clip(max=0)))
+
+    valid_times = [t for t in times if t]
     duration_hms = None
-    if len(times) >= 2:
-        dur = (times[-1] - times[0]).total_seconds()
-        if dur > 0:
-            duration_hms = seconds_to_hms(dur)
+    if len(valid_times) >= 2:
+        duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds())
 
     return {
         "points": pts,
@@ -443,7 +417,7 @@ def parse_tcx(file):
         "D_up": round(dup),
         "D_down": round(ddn),
         "duration_hms": duration_hms,
-        "weather_points": weather_points,
+        "weather_points": None,
     }
 
 # -------------------------
@@ -805,40 +779,28 @@ for i in range(1, st.session_state.n_refs + 1):
 
     if file_in:
         name = getattr(file_in, "name", "") or ""
-        try:
-            if name.lower().endswith(".fit"):
-                data_fit = parse_fit(file_in)
-                if data_fit:
-                    dist = data_fit.get("distance", dist)
-                    dup = data_fit.get("D_up", dup)
-                    ddn = data_fit.get("D_down", ddn)
-                    duration_hms_file = data_fit.get("duration_hms")
+        
+    # --- Import FIT / TCX (version stable) ---
+    if file_in:
+        filename = file_in.name.lower()
 
-                    wps = data_fit.get("weather_points", [])
-                    temps_ref = [wp["weather"]["temp"] for wp in wps if wp.get("weather") and wp["weather"].get("temp") is not None]
-                    winds_ref = [wp["weather"]["wind"] for wp in wps if wp.get("weather") and wp["weather"].get("wind") is not None]
-                    hums_ref = [wp["weather"]["humidity"] for wp in wps if wp.get("weather") and wp["weather"].get("humidity") is not None]
-                    avg_temp_ref = float(np.mean(temps_ref)) if temps_ref else None
-                    avg_wind_ref = float(np.mean(winds_ref)) if winds_ref else None
-                    avg_hum_ref = float(np.mean(hums_ref)) if hums_ref else None
+        # --- FIT ---
+        if filename.endswith(".fit"):
+            fit_data = parse_fit(file_in)
+            if fit_data:
+                dist = fit_data["distance"]
+                dup = fit_data["D_up"]
+                ddn = fit_data["D_down"]
+                duration_hms_file = fit_data["duration_hms"]
 
-            elif name.lower().endswith(".tcx"):
-                tcx_res = parse_tcx(file_in)
-                if tcx_res:
-                    dist = int(round(tcx_res.get("distance", dist)))
-                    dup = int(round(tcx_res.get("D_up", dup)))
-                    ddn = int(round(tcx_res.get("D_down", ddn)))
-                    duration_hms_file = tcx_res.get("duration_hms")
-
-                    wps = tcx_res.get("weather_points", [])
-                    temps_ref = [wp["weather"]["temp"] for wp in wps if wp.get("weather") and wp["weather"].get("temp") is not None]
-                    winds_ref = [wp["weather"]["wind"] for wp in wps if wp.get("weather") and wp["weather"].get("wind") is not None]
-                    hums_ref = [wp["weather"]["humidity"] for wp in wps if wp.get("weather") and wp["weather"].get("humidity") is not None]
-                    avg_temp_ref = float(np.mean(temps_ref)) if temps_ref else None
-                    avg_wind_ref = float(np.mean(winds_ref)) if winds_ref else None
-                    avg_hum_ref = float(np.mean(hums_ref)) if hums_ref else None
-        except Exception:
-            pass
+        # --- TCX ---
+        elif filename.endswith(".tcx"):
+            tcx_data = parse_tcx(file_in)
+            if tcx_data:
+                dist = tcx_data["distance"]
+                dup = tcx_data["D_up"]
+                ddn = tcx_data["D_down"]
+                duration_hms_file = tcx_data["duration_hms"]
 
     # temps effectif utilisé
     if duration_hms_file:

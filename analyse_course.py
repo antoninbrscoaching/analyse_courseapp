@@ -329,7 +329,7 @@ def parse_fit(file):
     if not records:
         return None
 
-    # --- MÉTÉO : 1 SEULE REQUÊTE ---
+    # --- METEO : 1 requête ---
     first_valid_dt = next((t for t in times_points if t), None)
     if first_valid_dt:
         meteo_day = get_weather_openmeteo_day(records[0][0], records[0][1], first_valid_dt.date())
@@ -340,7 +340,7 @@ def parse_fit(file):
     else:
         times_m = temps_m = winds_m = hums_m = None
 
-    # --- assignation météo (instantané) ---
+    # --- assignation météo ---
     for (lat, lon, elev, dist), t in zip(records, times_points):
         if times_m:
             meteo = get_weather_from_day_cache(times_m, temps_m, winds_m, hums_m, t)
@@ -354,29 +354,29 @@ def parse_fit(file):
             "weather": meteo,
         })
 
-try:
-    # calcul distance / D+ / D-
-    df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
-    dup = float(np.sum(np.diff(df.elev).clip(min=0)))
-    ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
+    try:
+        # calcul distance / D+ / D-
+        df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
+        dup = float(np.sum(np.diff(df.elev).clip(min=0)))
+        ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
 
-    # durée
-    valid_times = [t for t in times_points if t]
-    duration_hms = None
-    if len(valid_times) >= 2:
-        duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds())
+        # durée
+        valid_times = [t for t in times_points if t]
+        duration_hms = None
+        if len(valid_times) >= 2:
+            duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds())
 
-    return {
-        "distance": round(float(df["dist"].max())),
-        "D_up": round(dup),
-        "D_down": round(ddn),
-        "duration_hms": duration_hms,
-        "weather_points": weather_points,
-    }
+        return {
+            "distance": round(float(df["dist"].max())),
+            "D_up": round(dup),
+            "D_down": round(ddn),
+            "duration_hms": duration_hms,
+            "weather_points": weather_points,
+        }
 
-except Exception as e:
-    st.error(f"Erreur FIT : {e}")
-    return None
+    except Exception as e:
+        st.error(f"Erreur FIT : {e}")
+        return None
 
 def parse_tcx(file):
     """

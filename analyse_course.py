@@ -1,4 +1,4 @@
-# analyse_course_refactor_final.py
+# analyse_course_refactor_final_full.py
 import streamlit as st
 import math
 import gpxpy
@@ -228,70 +228,51 @@ def parse_tcx(file):
     return dict(points=pts, distance=round(total), D_up=round(dup), D_down=round(ddn), duration_hms=duration_hms)
 
 # -------------------------
-# Helpers
+# Fonction principale de calcul
 # -------------------------
-def safe_float(val, default=0.0):
-    try:
-        if val is None:
-            return float(default)
-        if isinstance(val, str):
-            s = val.strip()
-            if s == "" or s.lower() in ("nan", "none"):
-                return float(default)
-            return float(s.replace(",", "."))
-        if isinstance(val, (float, int, np.number)):
-            return float(val) if not np.isnan(val) and not np.isinf(val) else float(default)
-        return float(val)
-    except:
-        return float(default)
+def run_prediction_df(distance_cible_km, refs_input, points, date_course_local, heure_course_local,
+                      ideal_refs=True, apply_elev=True, apply_temp=True, apply_fatigue=False,
+                      objective_time_hms=None, k_up=1.04, k_down=0.996,
+                      k_temp_hot=0.002, k_temp_cold=0.002, opt_temp=12.0, fatigue_rate=0.0):
 
-def clean_time_input(v):
-    if v is None:
-        return "0:00:00"
-    if isinstance(v, (int,float)):
-        return seconds_to_hms(float(v))
-    s = str(v).strip()
-    return "0:00:00" if s == "" else s
+    refs_prepared = []
+    for r in refs_input:
+        temps_sec = hms_to_seconds(r["temps"])
+        d_up = r.get("D_up",0)
+        d_down = r.get("D_down",0)
+        if ideal_refs:
+            temps_ideal = apply_elevation_gradient_route(temps_sec, d_up, d_down, k_up=k_up, k_down=k_down) if apply_elev else temps_sec
+        else:
+            temps_ideal = temps_sec
+        refs_prepared.append({"distance": r["distance"], "temps": temps_ideal})
 
-# -------------------------
-# Recalibration
-# -------------------------
-def recalibrate_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
-    secs = hms_to_seconds(ref["temps_brut"])
-    d = safe_float(ref["distance"])
-    up = safe_float(ref["D_up"])
-    down = safe_float(ref["D_down"])
-    seg_len = d if d>0 else 1000
-    factor_elev = 1 + (k_up-1)*(up/seg_len) + (1-k_down)*(down/seg_len)
-    factor_elev = factor_elev if factor_elev != 0 else 1
-    return secs / factor_elev
+    a, K = fit_loglog_model(refs_prepared)
+    if objective_time_hms:
+        a = override_with_objective(distance_cible_km*1000 if distance_cible_km else refs_prepared[-1]["distance"], objective_time_hms, K)
 
-def build_ref_table(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
-    rows = []
-    for r in refs_raw:
-        t_brut = r["temps_brut"]
-        secs_brut = hms_to_seconds(t_brut)
-        secs_ideal = recalibrate_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
-        rows.append({
-            "Nom": r.get("nom","Réf"),
-            "Distance (km)": round(r["distance"]/1000,2),
-            "D+ (m)": r["D_up"],
-            "D- (m)": r["D_down"],
-            "Temps brut": t_brut,
-            "Temps idéal": seconds_to_hms(secs_ideal),
-            "Δ (%)": round((secs_ideal-secs_brut)/secs_brut*100,2) if secs_brut>0 else 0
-        })
-    df = pd.DataFrame(rows)
-    st.subheader("⏱️ Récap références (raw + recalibrées)")
-    st.dataframe(df, use_container_width=True)
-    return df
+    if not distance_cible_km:
+        distance_cible_km = sum(SimplePoint(points[i-1].latitude, points[i-1].longitude, getattr(points[i-1], "elevation", 0)).distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0))) for i in range(1,len(points))) / 1000.0
 
-def prepare_refs_for_fit(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
-    prepared = []
-    for r in refs_raw:
-        secs = recalibrate_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
-        prepared.append({"distance": r["distance"], "temps": secs})
-    return prepared
+    total_seconds = predict_time_flat(distance_cible_km*1000, a, K)
+    if apply_fatigue:
+        total_seconds *= (1 + fatigue_rate/100)
+    if apply_temp:
+        temp_hist = get_historical_temp(0,0,date_course_local)
+        mult_temp = temp_multiplier_nonlin(temp_hist, opt_temp, k_temp_hot, k_temp_cold)
+        total_seconds *= mult_temp
+
+    df_res = pd.DataFrame([{
+        "Distance km": distance_cible_km,
+        "Temps sec": total_seconds,
+        "Temps hh:mm:ss": seconds_to_hms(total_seconds)
+    }])
+
+    return {
+        "df": df_res,
+        "total_seconds": total_seconds,
+        "total_human": seconds_to_hms(total_seconds),
+        "distance_gpx_km": distance_cible_km
+    }
 
 # -------------------------
 # UI : Entrées & Références

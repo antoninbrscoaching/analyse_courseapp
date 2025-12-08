@@ -69,53 +69,54 @@ def get_weather_openweather(lat, lon, dt):
 # -------------------------
 
 @st.cache_data(show_spinner=False)
-def get_weather_openmeteo_history(lat, lon, dt):
+def get_weather_openmeteo_day(lat, lon, date_obj):
     """
-    Donne la météo HISTORIQUE (temp °C, vent m/s, humidité %)
-    via Open-Meteo Archive API, pour un jour / une heure donnés.
-
-    Utilisation :
-      - Pour les fichiers FIT/TCX de référence (parse_fit / parse_tcx)
-      - Potentiellement comme fallback dans get_historical_temp
+    Récupère TOUTE la journée météo (24 valeurs horaires) en un seul appel.
+    Retourne :
+        - times : liste datetime
+        - temps : liste température
+        - winds : liste vent
+        - hums  : liste humidité
     """
-    try:
-        if dt is None:
-            return None
+    date_str = date_obj.strftime("%Y-%m-%d")
 
-        date_str = dt.strftime("%Y-%m-%d")
+    url = (
+        "https://archive-api.open-meteo.com/v1/archive?"
+        f"latitude={lat}&longitude={lon}"
+        f"&start_date={date_str}&end_date={date_str}"
+        "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
+        "&timezone=UTC"
+    )
 
-        url = (
-            "https://archive-api.open-meteo.com/v1/archive"
-            f"?latitude={lat}&longitude={lon}"
-            f"&start_date={date_str}&end_date={date_str}"
-            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
-            "&timezone=UTC"
-        )
+    r = requests.get(url)
+    data = r.json()
 
-        r = requests.get(url)
-        data = r.json()
-
-        if "hourly" not in data:
-            return None
-
-        hours = data["hourly"]["time"]
-        temps = data["hourly"]["temperature_2m"]
-        winds = data["hourly"]["wind_speed_10m"]
-        hums = data["hourly"]["relativehumidity_2m"]
-
-        # On cherche l'heure la plus proche de dt
-        dt_naive = dt.replace(tzinfo=None)
-        diffs = [abs(datetime.fromisoformat(h) - dt_naive) for h in hours]
-        idx = int(np.argmin(diffs))
-
-        return {
-            "temp": temps[idx],
-            "wind": winds[idx],
-            "humidity": hums[idx],
-        }
-    except Exception:
+    if "hourly" not in data:
         return None
 
+    times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
+    temps = data["hourly"]["temperature_2m"]
+    winds = data["hourly"]["wind_speed_10m"]
+    hums  = data["hourly"]["relativehumidity_2m"]
+
+    return times, temps, winds, hums
+
+
+def get_weather_from_day_cache(times, temps, winds, hums, dt_point):
+    """
+    Donne la météo pour un point FIT en cherchant l’heure la plus proche.
+    """
+    if dt_point is None:
+        return None
+    diffs = [abs(t - dt_point) for t in times]
+    idx = int(np.argmin(diffs))
+    return {
+        "temp": temps[idx],
+        "wind": winds[idx],
+        "humidity": hums[idx]
+    }
+    except Exception:
+        return None
 
 # -------------------------
 # MÉTÉO HISTORIQUE (fallback simple pour recalibrage)
@@ -303,64 +304,77 @@ def gpx_to_df(points):
     ])
 
 def parse_fit(file):
-    """
-    Parse FIT et retourne distance, D+, D-, durée, et points avec météo historique
-    (temp, vent, humidité) via Open-Meteo.
-    → OpenWeather n'est plus utilisé ici (références = historique).
-    """
-    try:
-        file.seek(0)
-        fit = FitFile(file)
-        fit.parse()
-        records = []
-        times = []
-        weather_points = []
+    file.seek(0)
+    fit = FitFile(file)
+    fit.parse()
 
-        for msg in fit.get_messages("record"):
-            data = {d.name: d.value for d in msg}
-            lat_raw = data.get("position_lat")
-            lon_raw = data.get("position_long")
-            ts = data.get("timestamp")
+    records = []
+    times_points = []
+    weather_points = []
 
-            if lat_raw is not None and lon_raw is not None:
-                lat = lat_raw * (180 / 2**31)
-                lon = lon_raw * (180 / 2**31)
-                elev = data.get("altitude", 0)
-                dist = data.get("distance", 0)
-                records.append((lat, lon, elev, dist))
+    # --- on récupère tous les points GPS/temps ---
+    for msg in fit.get_messages("record"):
+        vals = {d.name: d.value for d in msg}
+        lat_raw = vals.get("position_lat")
+        lon_raw = vals.get("position_long")
+        ts = vals.get("timestamp")
+        elev = vals.get("altitude", 0)
+        dist = vals.get("distance", 0)
 
-                dt_local = ts.replace(tzinfo=None) if ts else None
-                meteo = get_weather_openmeteo_history(lat, lon, dt_local) if dt_local else None
+        if lat_raw and lon_raw:
+            lat = lat_raw * (180 / 2**31)
+            lon = lon_raw * (180 / 2**31)
+            dt_local = ts.replace(tzinfo=None) if ts else None
 
-                weather_points.append({
-                    "lat": lat,
-                    "lon": lon,
-                    "time": dt_local,
-                    "weather": meteo,
-                })
+            records.append((lat, lon, elev, dist))
+            times_points.append(dt_local)
 
-            if ts:
-                times.append(ts)
+    if not records:
+        return None
 
-        if not records:
-            return None
+    # --- MÉTÉO : 1 SEULE REQUÊTE ---
+    first_valid_dt = next((t for t in times_points if t), None)
+    if first_valid_dt:
+        meteo_day = get_weather_openmeteo_day(records[0][0], records[0][1], first_valid_dt.date())
+        if meteo_day:
+            times_m, temps_m, winds_m, hums_m = meteo_day
+        else:
+            times_m = temps_m = winds_m = hums_m = None
+    else:
+        times_m = temps_m = winds_m = hums_m = None
 
-        df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
-        dup = float(np.sum(np.diff(df["elev"]).clip(min=0))) if len(df) > 1 else 0.0
-        ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0))) if len(df) > 1 else 0.0
-        duration_hms = None
-        if times and len(times) >= 2:
-            dur = (times[-1] - times[0]).total_seconds()
-            if dur > 0:
-                duration_hms = seconds_to_hms(dur)
+    # --- assignation météo (instantané) ---
+    for (lat, lon, elev, dist), t in zip(records, times_points):
+        if times_m:
+            meteo = get_weather_from_day_cache(times_m, temps_m, winds_m, hums_m, t)
+        else:
+            meteo = None
 
-        return dict(
-            distance=round(float(df["dist"].max()) if "dist" in df.columns else 0),
-            D_up=round(dup),
-            D_down=round(ddn),
-            duration_hms=duration_hms,
-            weather_points=weather_points,
-        )
+        weather_points.append({
+            "lat": lat,
+            "lon": lon,
+            "time": t,
+            "weather": meteo,
+        })
+
+    # calcul distance / D+ / D-
+    df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
+    dup = float(np.sum(np.diff(df.elev).clip(min=0)))
+    ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
+
+    # durée
+    valid_times = [t for t in times_points if t]
+    duration_hms = None
+    if len(valid_times) >= 2:
+        duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds())
+
+    return {
+        "distance": round(float(df["dist"].max())),
+        "D_up": round(dup),
+        "D_down": round(ddn),
+        "duration_hms": duration_hms,
+        "weather_points": weather_points,
+    }
     except Exception as e:
         st.error(f"Erreur FIT : {e}")
         return None

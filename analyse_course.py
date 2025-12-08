@@ -807,7 +807,7 @@ for i in range(1, st.session_state.n_refs + 1):
         filename = file_in.name.lower()
 
     # --- FIT ---
-if filename.endswith(".fit"):
+    if filename.endswith(".fit"):
     fit_data = parse_fit(file_in)
     if fit_data:
         dist = fit_data["distance"]

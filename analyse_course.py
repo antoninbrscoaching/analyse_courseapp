@@ -18,8 +18,14 @@ import requests
 st.set_page_config(page_title="Prédiction course route (refactor)", layout="wide")
 st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé")
 
+# ============================================================
+# MÉTÉO
+#   - OpenWeather : prédiction jour J (segment par segment)
+#   - Open-Meteo  : historique pour les références FIT/TCX
+# ============================================================
+
 # -------------------------
-# MÉTÉO - OpenWeather
+# MÉTÉO - OpenWeather (Jour J)
 # -------------------------
 
 OW_API_KEY = st.secrets["openweather"]["api_key"]
@@ -30,6 +36,7 @@ def get_weather_openweather(lat, lon, dt):
     Récupère la météo via OpenWeather (température °C, vent m/s, humidité %)
     pour une latitude/longitude et un datetime (naïf).
     Utilise l'endpoint 3.0/onecall/timemachine.
+    → Utilisé pour la PRÉDICTION JOUR J (run_prediction_df).
     """
     try:
         timestamp = int(dt.timestamp())
@@ -56,15 +63,76 @@ def get_weather_openweather(lat, lon, dt):
         st.error(f"Erreur météo OpenWeather : {e}")
         return None
 
+
 # -------------------------
-# MÉTÉO HISTORIQUE (fallback simple)
+# MÉTÉO HISTORIQUE - Open-Meteo (Références)
+# -------------------------
+
+@st.cache_data(show_spinner=False)
+def get_weather_openmeteo_history(lat, lon, dt):
+    """
+    Donne la météo HISTORIQUE (temp °C, vent m/s, humidité %)
+    via Open-Meteo Archive API, pour un jour / une heure donnés.
+
+    Utilisation :
+      - Pour les fichiers FIT/TCX de référence (parse_fit / parse_tcx)
+      - Potentiellement comme fallback dans get_historical_temp
+    """
+    try:
+        if dt is None:
+            return None
+
+        date_str = dt.strftime("%Y-%m-%d")
+
+        url = (
+            "https://archive-api.open-meteo.com/v1/archive"
+            f"?latitude={lat}&longitude={lon}"
+            f"&start_date={date_str}&end_date={date_str}"
+            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
+            "&timezone=UTC"
+        )
+
+        r = requests.get(url)
+        data = r.json()
+
+        if "hourly" not in data:
+            return None
+
+        hours = data["hourly"]["time"]
+        temps = data["hourly"]["temperature_2m"]
+        winds = data["hourly"]["wind_speed_10m"]
+        hums = data["hourly"]["relativehumidity_2m"]
+
+        # On cherche l'heure la plus proche de dt
+        dt_naive = dt.replace(tzinfo=None)
+        diffs = [abs(datetime.fromisoformat(h) - dt_naive) for h in hours]
+        idx = int(np.argmin(diffs))
+
+        return {
+            "temp": temps[idx],
+            "wind": winds[idx],
+            "humidity": hums[idx],
+        }
+    except Exception:
+        return None
+
+
+# -------------------------
+# MÉTÉO HISTORIQUE (fallback simple pour recalibrage)
 # -------------------------
 def get_historical_temp(lat, lon, dt):
     """
-    Fallback très simplifié si jamais besoin : température 'fake' en fonction du jour.
-    Utilisé seulement si aucune météo réelle n'est dispo pour les références.
+    Fallback de température historique pour le recalibrage des références
+    quand on n'a pas de moyenne extraite du FIT/TCX.
+
+    → On essaye d'abord Open-Meteo, sinon on retourne une valeur "raisonnable".
     """
-    return 10.0 + (dt.day % 10)  # juste pour test / backup
+    meteo = get_weather_openmeteo_history(lat, lon, dt) if dt else None
+    if meteo and meteo.get("temp") is not None:
+        return float(meteo["temp"])
+    # dernier recours : ancienne valeur fake
+    return 10.0 + (dt.day % 10) if dt else 15.0
+
 
 # -------------------------
 # UTILITAIRES
@@ -236,7 +304,9 @@ def gpx_to_df(points):
 
 def parse_fit(file):
     """
-    Parse FIT et retourne distance, D+, D-, durée, et points avec météo (temp, vent, humidité).
+    Parse FIT et retourne distance, D+, D-, durée, et points avec météo historique
+    (temp, vent, humidité) via Open-Meteo.
+    → OpenWeather n'est plus utilisé ici (références = historique).
     """
     try:
         file.seek(0)
@@ -260,7 +330,7 @@ def parse_fit(file):
                 records.append((lat, lon, elev, dist))
 
                 dt_local = ts.replace(tzinfo=None) if ts else None
-                meteo = get_weather_openweather(lat, lon, dt_local) if dt_local else None
+                meteo = get_weather_openmeteo_history(lat, lon, dt_local) if dt_local else None
 
                 weather_points.append({
                     "lat": lat,
@@ -297,7 +367,8 @@ def parse_fit(file):
 
 def parse_tcx(file):
     """
-    Parse TCX et retourne points (SimplePoint), distance, D+, D-, durée, et points météo.
+    Parse TCX et retourne points (SimplePoint), distance, D+, D-, durée,
+    et points météo historique via Open-Meteo.
     """
     try:
         file.seek(0)
@@ -330,7 +401,7 @@ def parse_tcx(file):
         elevs.append(elev)
         pts.append(SimplePoint(lat, lon, elev, t))
 
-        meteo = get_weather_openweather(lat, lon, t) if t else None
+        meteo = get_weather_openmeteo_history(lat, lon, t) if t else None
         weather_points.append({
             "lat": lat,
             "lon": lon,
@@ -807,7 +878,7 @@ for r in refs_raw:
     )
 
     t_hist = None
-    # si demandé : on utilise d'abord la temp moyenne de la réf (FIT/TCX), sinon fallback
+    # si demandé : on utilise d'abord la temp moyenne de la réf (FIT/TCX), sinon fallback Open-Meteo
     if "use_hist_refs" in locals() and use_hist_refs:
         temp_hist = r.get("avg_temp")
         if temp_hist is None:

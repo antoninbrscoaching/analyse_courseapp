@@ -229,7 +229,6 @@ def parse_fit(file):
 
 # -------------------------
 # Helpers safe
-# Helpers
 # -------------------------
 def safe_float(val, default=0.0):
     try:
@@ -246,20 +245,18 @@ def safe_float(val, default=0.0):
             return float(val)
         return float(val)
     except Exception:
-    except:
         return float(default)
+
 
 def clean_time_input(v):
     if v is None:
         return "0:00:00"
     if isinstance(v, (int, float, np.number)):
-    if isinstance(v, (int, float)):
         return seconds_to_hms(float(v))
     s = str(v).strip()
     if s == "" or s.lower() in ("none", "nan"):
         return "0:00:00"
     return s
-    return "0:00:00" if s == "" else s
 
 # -------------------------
 # Recalibration : applique correction élévation & température

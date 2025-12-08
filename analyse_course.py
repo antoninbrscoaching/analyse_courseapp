@@ -174,46 +174,27 @@ def override_with_objective(distance_m, objective_time_hms, K):
 # -------------------------
 # Parsers GPX / FIT / TCX
 # -------------------------
-def parse_gpx_points(file):
-    try:
-        file.seek(0)
-        gpx = gpxpy.parse(file)
-        points = []
-        for track in gpx.tracks:
-            for segment in track.segments:
-                for p in segment.points:
-                    points.append(p)
-        return gpx, points
-    except Exception as e:
-        st.error(f"Erreur parsing GPX : {e}")
-        return None, []
-
-def gpx_to_df(points):
-    return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0, "time": getattr(p, "time", None)} for p in points])
-    return pd.DataFrame([{
-        "lat": p.latitude,
-        "lon": p.longitude,
-        "elev": p.elevation or 0,
-        "time": getattr(p, "time", None)
-    } for p in points])
-
 def parse_fit(file):
     try:
         file.seek(0)
         fit = FitFile(file)
         fit.parse()
+
         records = []
         times = []
-        records, times = [], []
+
         for msg in fit.get_messages("record"):
             data = {d.name: d.value for d in msg}
+
+            # On ne traite que les points GPS valides
             if data.get("position_lat") is not None and data.get("position_long") is not None:
-            if data.get("position_lat") and data.get("position_long"):
                 lat = data["position_lat"] * (180 / 2**31)
                 lon = data["position_long"] * (180 / 2**31)
                 elev = data.get("altitude", 0)
                 dist = data.get("distance", 0)
                 records.append((lat, lon, elev, dist))
+
+            # On récupère les timestamps
             ts = data.get("timestamp")
             if ts:
                 times.append(ts)
@@ -221,98 +202,30 @@ def parse_fit(file):
         if not records:
             return None
 
+        # Création du DataFrame
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
+
+        # Calcul des dénivelés positifs et négatifs
         dup = float(np.sum(np.diff(df["elev"]).clip(min=0))) if len(df) > 1 else 0.0
         ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0))) if len(df) > 1 else 0.0
-        dup = float(np.sum(np.diff(df["elev"]).clip(min=0)))
-        ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0)))
 
+        # Durée
         duration_hms = None
-        if times and len(times) >= 2:
         if len(times) >= 2:
             dur = (times[-1] - times[0]).total_seconds()
             if dur > 0:
                 duration_hms = seconds_to_hms(dur)
-        return dict(distance=round(float(df["dist"].max()) if "dist" in df.columns else 0), D_up=round(dup), D_down=round(ddn), duration_hms=duration_hms)
 
-        return dict(
-            distance=round(float(df["dist"].max())),
-            D_up=round(dup), D_down=round(ddn),
-            duration_hms=duration_hms
-        )
-    except Exception:
+        return {
+            "distance": round(float(df["dist"].max()) if "dist" in df.columns else 0),
+            "D_up": round(dup),
+            "D_down": round(ddn),
+            "duration_hms": duration_hms
+        }
+
+    except Exception as e:
+        print(f"Erreur parsing FIT : {e}")
         return None
-
-def parse_tcx(file):
-    try:
-        file.seek(0)
-        data = file.read()
-        root = ET.fromstring(data)
-        root = ET.fromstring(file.read())
-    except Exception:
-        return None
-
-    trackpoints = root.findall('.//{*}Trackpoint')
-    pts, times, elevs = [], [], []
-    pts, elevs, times = [], [], []
-    for tp in trackpoints:
-        lat_elem = tp.find('.//{*}LatitudeDegrees')
-        lon_elem = tp.find('.//{*}LongitudeDegrees')
-        alt_elem = tp.find('.//{*}AltitudeMeters')
-        time_elem = tp.find('.//{*}Time')
-
-        if lat_elem is None or lon_elem is None:
-            continue
-
-        lat = float(lat_elem.text)
-        lon = float(lon_elem.text)
-        elev = float(alt_elem.text) if alt_elem is not None and alt_elem.text else 0.0
-        elev = float(alt_elem.text) if alt_elem is not None else 0
-        t = None
-        if time_elem is not None and time_elem.text:
-        if time_elem is not None:
-            try:
-                t = datetime.fromisoformat(time_elem.text.replace('Z', '+00:00')).replace(tzinfo=None)
-                times.append(t)
-            except Exception:
-                t = None
-            except:
-                pass
-
-        elevs.append(elev)
-        pts.append(SimplePoint(lat, lon, elev, t))
-
-    if not pts:
-        return None
-
-    total = 0.0
-    for i in range(1, len(pts)):
-        total += pts[i].distance_3d(pts[i-1])
-    total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1, len(pts)))
-    dup = float(np.sum(np.diff(elevs).clip(min=0)))
-    ddn = float(-np.sum(np.diff(elevs).clip(max=0)))
-
-    dup = float(np.sum(np.diff(elevs).clip(min=0))) if elevs else 0.0
-    ddn = float(-np.sum(np.diff(elevs).clip(max=0))) if elevs else 0.0
-    duration_hms = None
-    if len(times) >= 2:
-        dur = (times[-1] - times[0]).total_seconds()
-        if dur > 0:
-            duration_hms = seconds_to_hms(dur)
-
-    return {
-        "points": pts,
-        "distance": round(total),
-        "D_up": round(dup),
-        "D_down": round(ddn),
-        "duration_hms": duration_hms
-    }
-    return dict(
-        points=pts,
-        distance=round(total),
-        D_up=round(dup), D_down=round(ddn),
-        duration_hms=duration_hms
-    )
 
 # -------------------------
 # Helpers safe

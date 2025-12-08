@@ -1,4 +1,5 @@
 # analyse_course_refactor.py
+# analyse_course_refactor_final.py
 import streamlit as st
 import math
 import gpxpy
@@ -16,6 +17,8 @@ from io import BytesIO
 # -------------------------
 st.set_page_config(page_title="Prédiction course route (refactor)", layout="wide")
 st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé")
+st.set_page_config(page_title="Prédiction course route (refactor final)", layout="wide")
+st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé Final")
 
 # -------------------------
 # MÉTÉO HISTORIQUE (placeholder)
@@ -27,6 +30,8 @@ def get_historical_temp(lat, lon, dt):
     """
     # Exemple simple : température pseudo-aléatoire basée sur le jour du mois
     return 10.0 + (dt.day % 10)  # juste pour test
+    """Placeholder : renvoie une température historique estimée."""
+    return 10.0 + (dt.day % 10)
 
 # -------------------------
 # UTILITAIRES
@@ -42,6 +47,7 @@ def hms_to_seconds(hms: str) -> int:
         elif len(parts) == 2:
             h = 0
             m, s = parts
+            h = 0; m, s = parts
         elif len(parts) == 1:
             h = 0; m = 0; s = parts[0]
         else:
@@ -127,6 +133,7 @@ def fit_loglog_model(refs):
     """
     X = []
     Y = []
+    X, Y = [], []
     for r in refs:
         d_m = r.get("distance", None)
         t_raw = r.get("temps")
@@ -136,6 +143,7 @@ def fit_loglog_model(refs):
             secs = float(t_raw)
         else:
             secs = hms_to_seconds(str(t_raw))
+        secs = float(t_raw) if isinstance(t_raw, (int, float, np.number)) else hms_to_seconds(str(t_raw))
         if secs <= 0:
             continue
         d_km = float(d_m) / 1000.0
@@ -143,6 +151,7 @@ def fit_loglog_model(refs):
         Y.append(math.log(max(1e-6, secs)))
     if len(X) >= 2:
         coeffs = np.polyfit(X, Y, 1)  # Y = K * X + log(a)
+        coeffs = np.polyfit(X, Y, 1)
         K = float(coeffs[0])
         loga = float(coeffs[1])
         a = math.exp(loga)
@@ -150,6 +159,8 @@ def fit_loglog_model(refs):
             a = 240.0
         if abs(K) > 5:
             K = 1.0
+        a = a if 0 < a < 1e6 else 240.0
+        K = K if abs(K) <= 5 else 1.0
         return a, K
     elif len(X) == 1:
         d_km = math.exp(X[0])
@@ -183,6 +194,7 @@ def parse_gpx_points(file):
             for segment in track.segments:
                 for p in segment.points:
                     points.append(p)
+        points = [p for track in gpx.tracks for segment in track.segments for p in segment.points]
         return gpx, points
     except Exception as e:
         st.error(f"Erreur parsing GPX : {e}")
@@ -195,6 +207,7 @@ def gpx_to_df(points):
         "elev": p.elevation or 0,
         "time": getattr(p, "time", None)
     } for p in points])
+    return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0, "time": getattr(p, "time", None)} for p in points])
 
 def parse_fit(file):
     try:
@@ -218,6 +231,7 @@ def parse_fit(file):
             return None
 
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
+        df = pd.DataFrame(records, columns=["lat","lon","elev","dist"])
         dup = float(np.sum(np.diff(df["elev"]).clip(min=0)))
         ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0)))
 
@@ -232,6 +246,8 @@ def parse_fit(file):
             D_up=round(dup), D_down=round(ddn),
             duration_hms=duration_hms
         )
+        duration_hms = seconds_to_hms((times[-1]-times[0]).total_seconds()) if len(times)>=2 else None
+        return dict(distance=round(float(df["dist"].max())), D_up=round(dup), D_down=round(ddn), duration_hms=duration_hms)
     except Exception:
         return None
 
@@ -286,6 +302,8 @@ def parse_tcx(file):
         D_up=round(dup), D_down=round(ddn),
         duration_hms=duration_hms
     )
+    duration_hms = seconds_to_hms((times[-1]-times[0]).total_seconds()) if len(times)>=2 else None
+    return dict(points=pts, distance=round(total), D_up=round(dup), D_down=round(ddn), duration_hms=duration_hms)
 
 # -------------------------
 # Helpers
@@ -303,6 +321,7 @@ def safe_float(val, default=0.0):
             if np.isnan(val) or np.isinf(val):
                 return float(default)
             return float(val)
+            return float(val) if not np.isnan(val) and not np.isinf(val) else float(default)
         return float(val)
     except:
         return float(default)
@@ -311,18 +330,24 @@ def clean_time_input(v):
     if v is None:
         return "0:00:00"
     if isinstance(v, (int, float)):
+    if isinstance(v, (int,float)):
         return seconds_to_hms(float(v))
     s = str(v).strip()
     return "0:00:00" if s == "" else s
 
 # -------------------------
 # Recalibration vers conditions idéales
+# Recalibration
 # -------------------------
 def recalibrate_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     secs = hms_to_seconds(ref["temps_brut"])
     d = safe_float(ref["distance"])
     up = safe_float(ref["D_up"])
     down = safe_float(ref["D_down"])
+    seg_len = d if d>0 else 1000
+    factor_elev = 1 + (k_up-1)*(up/seg_len) + (1-k_down)*(down/seg_len)
+    factor_elev = factor_elev if factor_elev != 0 else 1
+    return secs / factor_elev
 
     seg_len = d if d > 0 else 1000
     up_factor = (k_up - 1.0) * (up / seg_len)
@@ -349,11 +374,14 @@ def build_ref_table(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
         rows.append({
             "Nom": r["nom"],
             "Distance (km)": round(r["distance"] / 1000, 2),
+            "Nom": r.get("nom","Réf"),
+            "Distance (km)": round(r["distance"]/1000,2),
             "D+ (m)": r["D_up"],
             "D- (m)": r["D_down"],
             "Temps brut": t_brut,
             "Temps idéal": seconds_to_hms(secs_ideal),
             "Δ (%)": round((secs_ideal - secs_brut) / secs_brut * 100, 2) if secs_brut > 0 else 0
+            "Δ (%)": round((secs_ideal-secs_brut)/secs_brut*100,2) if secs_brut>0 else 0
         })
 
     df = pd.DataFrame(rows)
@@ -473,7 +501,6 @@ k_temp_cold = 0.002  # coefficient froid
 opt_temp = 12.0      # température optimale en °C
 
 # temps sous conditions idéales
-t_ideal = recalibrate_ref_to_ideal(
 t_ideal = recalibrate_to_ideal(
     ref=r,
     k_up=k_up,
@@ -483,14 +510,12 @@ t_ideal = recalibrate_to_ideal(
     opt_temp=opt_temp
 )
 
-# temps avec météo historique si activé
 # météo historique
 t_hist = None
 if 'use_hist_refs' in locals() and use_hist_refs:
     temp_hist = get_historical_temp(
         lat_input, lon_input, datetime.combine(date_course, heure_course)
     )
-    t_hist = recalibrate_ref_using_current(
     temp_mult = temp_multiplier_nonlin(temp_hist, opt_temp, k_temp_hot, k_temp_cold)
 
     t_hist = recalibrate_to_ideal(
@@ -499,9 +524,6 @@ if 'use_hist_refs' in locals() and use_hist_refs:
         k_down=k_down,
         k_temp_hot=k_temp_hot,
         k_temp_cold=k_temp_cold,
-        opt_temp=opt_temp,
-        assumed_temp=temp_hist
-    )
         opt_temp=opt_temp
     ) * temp_mult
 

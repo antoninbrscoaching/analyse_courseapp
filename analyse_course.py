@@ -806,31 +806,36 @@ for i in range(1, st.session_state.n_refs + 1):
     if file_in:
         filename = file_in.name.lower()
 
+# --- Import FIT / TCX (version stable) ---
+if file_in:
+    filename = file_in.name.lower()
+
     # --- FIT ---
     if filename.endswith(".fit"):
-    fit_data = parse_fit(file_in)
-    if fit_data:
-        dist = fit_data["distance"]
-        dup = fit_data["D_up"]
-        ddn = fit_data["D_down"]
-        duration_hms_file = fit_data["duration_hms"]
+        fit_data = parse_fit(file_in)
+        if fit_data:
+            dist = fit_data["distance"]
+            dup = fit_data["D_up"]
+            ddn = fit_data["D_down"]
+            duration_hms_file = fit_data["duration_hms"]
 
-        avg_temp_ref = fit_data.get("avg_temp")
-        avg_wind_ref = fit_data.get("avg_wind")
-        avg_hum_ref  = fit_data.get("avg_humidity")
+            avg_temp_ref = fit_data.get("avg_temp")
+            avg_wind_ref = fit_data.get("avg_wind")
+            avg_hum_ref  = fit_data.get("avg_humidity")
 
-# --- TCX ---
-elif filename.endswith(".tcx"):
-    tcx_data = parse_tcx(file_in)
-    if tcx_data:
-        dist = tcx_data["distance"]
-        dup = tcx_data["D_up"]
-        ddn = tcx_data["D_down"]
-        duration_hms_file = tcx_data["duration_hms"]
+    # --- TCX ---
+    elif filename.endswith(".tcx"):
+        tcx_data = parse_tcx(file_in)
+        if tcx_data:
+            dist = tcx_data["distance"]
+            dup = tcx_data["D_up"]
+            ddn = tcx_data["D_down"]
+            duration_hms_file = tcx_data["duration_hms"]
 
-        avg_temp_ref = tcx_data.get("avg_temp")
-        avg_wind_ref = tcx_data.get("avg_wind")
-        avg_hum_ref  = tcx_data.get("avg_humidity")
+            avg_temp_ref = tcx_data.get("avg_temp")
+            avg_wind_ref = tcx_data.get("avg_wind")
+            avg_hum_ref  = tcx_data.get("avg_humidity")
+
 
     # temps effectif utilisé
     if duration_hms_file:

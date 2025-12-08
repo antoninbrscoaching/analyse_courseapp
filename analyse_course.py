@@ -101,6 +101,49 @@ def get_weather_openmeteo_day(lat, lon, date_obj):
 
     return times, temps, winds, hums
 
+@st.cache_data(show_spinner=False)
+def get_weather_openmeteo_history(lat, lon, dt):
+    """
+    Récupère météo historique (temp, vent, humidité)
+    à l'heure la plus proche d'un datetime donné.
+    Utilise Open-Meteo (archive journalière).
+    """
+    if dt is None:
+        return None
+
+    day_str = dt.strftime("%Y-%m-%d")
+
+    url = (
+        "https://archive-api.open-meteo.com/v1/archive?"
+        f"latitude={lat}&longitude={lon}"
+        f"&start_date={day_str}&end_date={day_str}"
+        "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
+        "&timezone=UTC"
+    )
+
+    try:
+        r = requests.get(url)
+        data = r.json()
+    except:
+        return None
+
+    if "hourly" not in data:
+        return None
+
+    times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
+    temps = data["hourly"]["temperature_2m"]
+    winds = data["hourly"]["wind_speed_10m"]
+    hums  = data["hourly"]["relativehumidity_2m"]
+
+    diffs = np.abs(np.array(times) - dt)
+    idx = int(np.argmin(diffs))
+
+    return {
+        "temp": temps[idx],
+        "wind": winds[idx],
+        "humidity": hums[idx],
+    }
+
 def get_weather_from_day_cache(times, temps, winds, hums, dt_point):
     if dt_point is None:
         return None
@@ -329,22 +372,40 @@ def parse_fit(file):
         if not records:
             return None
 
-        df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
+        # ---------- MÉTÉO HISTORIQUE ----------
+        first_dt = next((t for t in times_points if t), None)
+        lat0, lon0 = records[0][0], records[0][1]
 
+        temps_list, winds_list, hums_list = [], [], []
+
+        if first_dt:
+            for t in times_points:
+                meteo = get_weather_openmeteo_history(lat0, lon0, t)
+                if meteo:
+                    if meteo["temp"] is not None: temps_list.append(meteo["temp"])
+                    if meteo["wind"] is not None: winds_list.append(meteo["wind"])
+                    if meteo["humidity"] is not None: hums_list.append(meteo["humidity"])
+
+        avg_temp = float(np.mean(temps_list)) if temps_list else None
+        avg_wind = float(np.mean(winds_list)) if winds_list else None
+        avg_hum  = float(np.mean(hums_list)) if hums_list else None
+
+        # ---------- DISTANCE / D+ / D- ----------
+        df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
         dup = float(np.sum(np.diff(df.elev).clip(min=0)))
         ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
 
         valid_times = [t for t in times_points if t]
-        duration_hms = None
-        if len(valid_times) >= 2:
-            duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds())
+        duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds()) if len(valid_times) >= 2 else None
 
         return {
             "distance": round(float(df["dist"].max())),
             "D_up": round(dup),
             "D_down": round(ddn),
             "duration_hms": duration_hms,
-            "weather_points": [],   # météo désactivée pour version stable
+            "avg_temp": avg_temp,
+            "avg_wind": avg_wind,
+            "avg_humidity": avg_hum,
         }
 
     except Exception as e:
@@ -362,14 +423,11 @@ def parse_tcx(file):
 
     ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
     tps = root.findall(".//tcx:Trackpoint", ns)
-
     if not tps:
         st.error("Aucun Trackpoint trouvé dans le TCX.")
         return None
 
-    pts = []
-    elevs = []
-    times = []
+    pts, elevs, times = [], [], []
 
     for tp in tps:
         lat = tp.find("tcx:Position/tcx:LatitudeDegrees", ns)
@@ -395,21 +453,29 @@ def parse_tcx(file):
         elevs.append(elev)
         times.append(t)
 
-    if len(pts) < 2:
-        return None
+    # ---------- MÉTÉO HISTORIQUE ----------
+    temps_list, winds_list, hums_list = [], [], []
+    if times and times[0]:
+        lat0, lon0 = pts[0].latitude, pts[0].longitude
+        for t in times:
+            meteo = get_weather_openmeteo_history(lat0, lon0, t)
+            if meteo:
+                if meteo["temp"] is not None: temps_list.append(meteo["temp"])
+                if meteo["wind"] is not None: winds_list.append(meteo["wind"])
+                if meteo["humidity"] is not None: hums_list.append(meteo["humidity"])
 
-    total = 0.0
-    for i in range(1, len(pts)):
-        total += pts[i].distance_3d(pts[i-1])
+    avg_temp = float(np.mean(temps_list)) if temps_list else None
+    avg_wind = float(np.mean(winds_list)) if winds_list else None
+    avg_hum  = float(np.mean(hums_list)) if hums_list else None
 
+    # ---------- DISTANCE / D+ / D- ----------
+    total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1, len(pts)))
     elev_arr = np.array(elevs)
     dup = float(np.sum(np.diff(elev_arr).clip(min=0)))
     ddn = float(-np.sum(np.diff(elev_arr).clip(max=0)))
 
     valid_times = [t for t in times if t]
-    duration_hms = None
-    if len(valid_times) >= 2:
-        duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds())
+    duration_hms = seconds_to_hms((valid_times[-1] - valid_times[0]).total_seconds()) if len(valid_times) >= 2 else None
 
     return {
         "points": pts,
@@ -417,7 +483,9 @@ def parse_tcx(file):
         "D_up": round(dup),
         "D_down": round(ddn),
         "duration_hms": duration_hms,
-        "weather_points": None,
+        "avg_temp": avg_temp,
+        "avg_wind": avg_wind,
+        "avg_humidity": avg_hum,
     }
 
 # -------------------------

@@ -174,27 +174,46 @@ def override_with_objective(distance_m, objective_time_hms, K):
 # -------------------------
 # Parsers GPX / FIT / TCX
 # -------------------------
+def parse_gpx_points(file):
+    try:
+        file.seek(0)
+        gpx = gpxpy.parse(file)
+        points = []
+        for track in gpx.tracks:
+            for segment in track.segments:
+                for p in segment.points:
+                    points.append(p)
+        return gpx, points
+    except Exception as e:
+        st.error(f"Erreur parsing GPX : {e}")
+        return None, []
+
+def gpx_to_df(points):
+    return pd.DataFrame([{"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0, "time": getattr(p, "time", None)} for p in points])
+    return pd.DataFrame([{
+        "lat": p.latitude,
+        "lon": p.longitude,
+        "elev": p.elevation or 0,
+        "time": getattr(p, "time", None)
+    } for p in points])
+
 def parse_fit(file):
     try:
         file.seek(0)
         fit = FitFile(file)
         fit.parse()
-
         records = []
         times = []
-
+        records, times = [], []
         for msg in fit.get_messages("record"):
             data = {d.name: d.value for d in msg}
-
-            # On ne traite que les points GPS valides
             if data.get("position_lat") is not None and data.get("position_long") is not None:
+            if data.get("position_lat") and data.get("position_long"):
                 lat = data["position_lat"] * (180 / 2**31)
                 lon = data["position_long"] * (180 / 2**31)
                 elev = data.get("altitude", 0)
                 dist = data.get("distance", 0)
                 records.append((lat, lon, elev, dist))
-
-            # On récupère les timestamps
             ts = data.get("timestamp")
             if ts:
                 times.append(ts)
@@ -202,33 +221,102 @@ def parse_fit(file):
         if not records:
             return None
 
-        # Création du DataFrame
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
-
-        # Calcul des dénivelés positifs et négatifs
         dup = float(np.sum(np.diff(df["elev"]).clip(min=0))) if len(df) > 1 else 0.0
         ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0))) if len(df) > 1 else 0.0
+        dup = float(np.sum(np.diff(df["elev"]).clip(min=0)))
+        ddn = float(-np.sum(np.diff(df["elev"]).clip(max=0)))
 
-        # Durée
         duration_hms = None
+        if times and len(times) >= 2:
         if len(times) >= 2:
             dur = (times[-1] - times[0]).total_seconds()
             if dur > 0:
                 duration_hms = seconds_to_hms(dur)
+        return dict(distance=round(float(df["dist"].max()) if "dist" in df.columns else 0), D_up=round(dup), D_down=round(ddn), duration_hms=duration_hms)
 
-        return {
-            "distance": round(float(df["dist"].max()) if "dist" in df.columns else 0),
-            "D_up": round(dup),
-            "D_down": round(ddn),
-            "duration_hms": duration_hms
-        }
-
-    except Exception as e:
-        print(f"Erreur parsing FIT : {e}")
+        return dict(
+            distance=round(float(df["dist"].max())),
+            D_up=round(dup), D_down=round(ddn),
+            duration_hms=duration_hms
+        )
+    except Exception:
         return None
+
+def parse_tcx(file):
+    try:
+        file.seek(0)
+        data = file.read()
+        root = ET.fromstring(data)
+        root = ET.fromstring(file.read())
+    except Exception:
+        return None
+
+    trackpoints = root.findall('.//{*}Trackpoint')
+    pts, times, elevs = [], [], []
+    pts, elevs, times = [], [], []
+    for tp in trackpoints:
+        lat_elem = tp.find('.//{*}LatitudeDegrees')
+        lon_elem = tp.find('.//{*}LongitudeDegrees')
+        alt_elem = tp.find('.//{*}AltitudeMeters')
+        time_elem = tp.find('.//{*}Time')
+
+        if lat_elem is None or lon_elem is None:
+            continue
+
+        lat = float(lat_elem.text)
+        lon = float(lon_elem.text)
+        elev = float(alt_elem.text) if alt_elem is not None and alt_elem.text else 0.0
+        elev = float(alt_elem.text) if alt_elem is not None else 0
+        t = None
+        if time_elem is not None and time_elem.text:
+        if time_elem is not None:
+            try:
+                t = datetime.fromisoformat(time_elem.text.replace('Z', '+00:00')).replace(tzinfo=None)
+                times.append(t)
+            except Exception:
+                t = None
+            except:
+                pass
+
+        elevs.append(elev)
+        pts.append(SimplePoint(lat, lon, elev, t))
+
+    if not pts:
+        return None
+
+    total = 0.0
+    for i in range(1, len(pts)):
+        total += pts[i].distance_3d(pts[i-1])
+    total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1, len(pts)))
+    dup = float(np.sum(np.diff(elevs).clip(min=0)))
+    ddn = float(-np.sum(np.diff(elevs).clip(max=0)))
+
+    dup = float(np.sum(np.diff(elevs).clip(min=0))) if elevs else 0.0
+    ddn = float(-np.sum(np.diff(elevs).clip(max=0))) if elevs else 0.0
+    duration_hms = None
+    if len(times) >= 2:
+        dur = (times[-1] - times[0]).total_seconds()
+        if dur > 0:
+            duration_hms = seconds_to_hms(dur)
+
+    return {
+        "points": pts,
+        "distance": round(total),
+        "D_up": round(dup),
+        "D_down": round(ddn),
+        "duration_hms": duration_hms
+    }
+    return dict(
+        points=pts,
+        distance=round(total),
+        D_up=round(dup), D_down=round(ddn),
+        duration_hms=duration_hms
+    )
 
 # -------------------------
 # Helpers safe
+# Helpers
 # -------------------------
 def safe_float(val, default=0.0):
     try:
@@ -245,18 +333,20 @@ def safe_float(val, default=0.0):
             return float(val)
         return float(val)
     except Exception:
+    except:
         return float(default)
-
 
 def clean_time_input(v):
     if v is None:
         return "0:00:00"
     if isinstance(v, (int, float, np.number)):
+    if isinstance(v, (int, float)):
         return seconds_to_hms(float(v))
     s = str(v).strip()
     if s == "" or s.lower() in ("none", "nan"):
         return "0:00:00"
     return s
+    return "0:00:00" if s == "" else s
 
 # -------------------------
 # Recalibration : applique correction élévation & température
@@ -265,30 +355,21 @@ def clean_time_input(v):
 # -------------------------
 def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     """
-    Retire l'effet du dénivelé et considère conditions idéales de température.
+    ref: dict avec 'distance' (m), 'temps' (h:mm:ss or secs), 'D_up', 'D_down'
+    On retire l'effet dénivelé en divisant par factor_elev,
+    On considère conditions idéales pour la température (temp_mult = 1),
+    donc temps_recal = secs / factor_elev
+    (Si tu avais une température par référence -> on pourrait retirer aussi l'effet température)
     """
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
     seg_len = seg_len if seg_len > 0 else 1000.0
-
     up_factor = (k_up - 1.0) * (D_up / seg_len)
     down_factor = (1.0 - k_down) * (D_down / seg_len)
     factor_elev = 1.0 + up_factor + down_factor
-    if factor_elev == 0:
-        factor_elev = 1.0
-
-    secs_no_elev = secs / factor_elev
-    # Conditions idéales pour la température
-    secs_flat_ideal = secs_no_elev
-    return max(0.0, secs_flat_ideal)
-
-
 def recalibrate_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
-    """
-    Recalibre un temps brut vers conditions idéales (plat + température optimale).
-    """
     secs = hms_to_seconds(ref["temps_brut"])
     d = safe_float(ref["distance"])
     up = safe_float(ref["D_up"])
@@ -300,31 +381,29 @@ def recalibrate_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     factor_elev = 1 + up_factor + down_factor
     if factor_elev == 0:
         factor_elev = 1.0
-
     secs_no_elev = secs / factor_elev
-    # Conditions idéales pour la température
+    # conditions idéales pour la température -> mult_temp = 1
     secs_flat_ideal = secs_no_elev
     return max(0.0, secs_flat_ideal)
-
+        factor_elev = 1
 
 def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None):
     """
-    Recalibre la référence en retirant l'effet de l'élévation et éventuellement la température.
+    Recalibre la référence en retirant l'effet de l'élévation et de la température
+    en supposant qu'on connaît la température réelle (optional).
+    Si assumed_temp est None => on ne retire pas l'effet température (temp_mult = 1).
     """
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
     seg_len = seg_len if seg_len > 0 else 1000.0
-
     up_factor = (k_up - 1.0) * (D_up / seg_len)
     down_factor = (1.0 - k_down) * (D_down / seg_len)
     factor_elev = 1.0 + up_factor + down_factor
     if factor_elev == 0:
         factor_elev = 1.0
-
     secs_no_elev = secs / factor_elev
-
     if assumed_temp is None:
         return max(0.0, secs_no_elev)
     else:
@@ -332,16 +411,20 @@ def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, op
         if mult_temp == 0:
             mult_temp = 1.0
         return max(0.0, secs_no_elev / mult_temp)
+    # Plat & 12°C = conditions idéales
+    ideal_secs = secs / factor_elev
+    return ideal_secs
 
 # -------------------------
 # Prépare les références AVANT fit: calcule temps_recal selon mode
+# TABLEAU REFS RAW + IDEAL
 # -------------------------
 def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, ideal_refs=False):
     """
-    refs_input: liste de dicts {distance, temps, D_up, D_down, maybe temps_fichier...}
+    refs_input: liste dicts {distance, temps, D_up, D_down, maybe temps_fichier...}
     Si ideal_refs True => on normalise vers 0% & opt_temp (on retire élévation, temp assume opt)
     Si False => on normalise en retirant l'effet élévation (mais en gardant température inconnue)
-    Retourne liste avec 'distance' (m) et 'temps' (secs as float)
+    Retourne liste with 'distance' (m) and 'temps' (secs as float)
     """
     prepared = []
     for r in refs_input:
@@ -350,35 +433,24 @@ def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_
         # prefer duration from file if present
         file_dur = r.get("duration_hms_file")
         raw_t = file_dur if file_dur else r.get("temps", "0:00:00")
-        
         # choose recalibration strategy
         if ideal_refs:
-            secs_recal = recalibrate_ref_to_ideal(
-                {"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
-                k_up, k_down, k_temp_hot, k_temp_cold, opt_temp
-            )
+            secs_recal = recalibrate_ref_to_ideal({"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
+                                                 k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
         else:
             # remove elevation effect, keep temp effect unknown (no assumed temp)
-            secs_recal = recalibrate_ref_using_current(
-                {"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
-                k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None
-            )
-        
+            secs_recal = recalibrate_ref_using_current({"distance": d, "temps": raw_t, "D_up": r.get("D_up", 0.0), "D_down": r.get("D_down", 0.0)},
+                                                       k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None)
         prepared.append({
             "distance": float(d),
             "temps": float(secs_recal)
-        })
-    return prepared
-
-
 def build_ref_table(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     rows = []
     for r in refs_raw:
         t_brut = r["temps_brut"]
         secs_brut = hms_to_seconds(t_brut)
 
-        # Correction ici : utiliser la fonction existante recalibrate_ref_to_ideal
-        secs_ideal = recalibrate_ref_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
+        secs_ideal = recalibrate_to_ideal(r, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp)
 
         rows.append({
             "Nom": r["nom"],
@@ -389,7 +461,7 @@ def build_ref_table(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
             "Temps idéal": seconds_to_hms(secs_ideal),
             "Δ (%)": round((secs_ideal - secs_brut) / secs_brut * 100, 2) if secs_brut > 0 else 0
         })
-    return rows
+    return prepared
 
 # -------------------------
 # Calcul principal de prédiction (utilise refs recalées par prepare_refs_for_fit)
@@ -578,25 +650,27 @@ def prepare_refs_for_fit(refs_raw, k_up, k_down, k_temp_hot, k_temp_cold, opt_te
 st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
 points = None
-
 if gpx_file:
-    try:
-        # Convertir le fichier en string avant parsing
-        gpx_content = gpx_file.read().decode("utf-8")
-        gpx, points = parse_gpx_points(io.StringIO(gpx_content))
-
-        if points:
-            total_m_tmp = sum(
-                SimplePoint(points[i-1].latitude, points[i-1].longitude, getattr(points[i-1], "elevation", 0))
-                .distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0)))
-                for i in range(1, len(points))
-            )
-            st.session_state["gpx_original_distance_km"] = total_m_tmp / 1000.0
-        else:
-            st.session_state["gpx_original_distance_km"] = None
-    except Exception as e:
-        st.error(f"Erreur lors de l'import GPX : {e}")
+    gpx, points = parse_gpx_points(gpx_file)
+    if points:
+        total_m_tmp = sum(SimplePoint(points[i-1].latitude, points[i-1].longitude, getattr(points[i-1], "elevation", 0))
+                        .distance_3d(SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0)))
+                        for i in range(1, len(points)))
+        st.session_state["gpx_original_distance_km"] = total_m_tmp / 1000.0
+    else:
         st.session_state["gpx_original_distance_km"] = None
+
+st.header("2️⃣ Courses de référence (manuel ou FIT/TCX)")
+if "n_refs" not in st.session_state:
+    st.session_state.n_refs = 3
+
+cols = st.columns([1,1])
+with cols[0]:
+    if st.button("➕ Ajouter (max 6)") and st.session_state.n_refs < 6:
+        st.session_state.n_refs += 1
+with cols[1]:
+    if st.button("➖ Retirer") and st.session_state.n_refs > 1:
+        st.session_state.n_refs -= 1
 
 # Collect raw refs (no recalculation here)
 refs_raw = []

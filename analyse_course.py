@@ -101,20 +101,17 @@ def get_weather_openmeteo_day(lat, lon, date_obj):
 
     return times, temps, winds, hums
 
-
 def get_weather_from_day_cache(times, temps, winds, hums, dt_point):
-    """
-    Donne la météo pour un point FIT en cherchant l’heure la plus proche.
-    """
     if dt_point is None:
         return None
-    diffs = [abs(t - dt_point) for t in times]
-    idx = int(np.argmin(diffs))
-    return {
-        "temp": temps[idx],
-        "wind": winds[idx],
-        "humidity": hums[idx]
-    }
+    try:
+        diffs = np.abs(np.array(times) - dt_point)
+        idx = int(np.argmin(diffs))
+        return {
+            "temp": temps[idx],
+            "wind": winds[idx],
+            "humidity": hums[idx],
+        }
     except Exception:
         return None
 

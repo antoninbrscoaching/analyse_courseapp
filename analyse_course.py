@@ -315,19 +315,29 @@ def parse_fit(file):
         for msg in fit.get_messages("record"):
             vals = {d.name: d.value for d in msg}
 
-            lat_raw = vals.get("position_lat")
-            lon_raw = vals.get("position_long")
-            ts = vals.get("timestamp")
-            elev = vals.get("altitude", 0)
-            dist = vals.get("distance", 0)
+    lat_raw = vals.get("position_lat")
+lon_raw = vals.get("position_long")
+ts = vals.get("timestamp")
+elev = vals.get("altitude", 0)
+dist = vals.get("distance", 0)
 
-            if lat_raw and lon_raw:
-                lat = lat_raw * (180 / 2**31)
-                lon = lon_raw * (180 / 2**31)
-                dt_local = ts.replace(tzinfo=None) if ts else None
+if lat_raw and lon_raw:
+    lat = lat_raw * (180 / 2**31)
+    lon = lon_raw * (180 / 2**31)
 
-                records.append((lat, lon, elev, dist))
-                times_points.append(dt_local)
+    # --- PATCH : conversion FIT timestamp ---
+    dt_local = None
+    if isinstance(ts, datetime):
+        dt_local = ts.replace(tzinfo=None)
+    elif isinstance(ts, (int, float)):
+        fit_epoch = datetime(1989, 12, 31)
+        try:
+            dt_local = fit_epoch + timedelta(seconds=float(ts))
+        except:
+            dt_local = None
+
+    records.append((lat, lon, elev, dist))
+    times_points.append(dt_local)
 
         if not records:
             return None

@@ -799,8 +799,8 @@ for i in range(1, st.session_state.n_refs + 1):
     avg_wind_ref = None
     avg_hum_ref = None
 
-    if file_in:
-        name = getattr(file_in, "name", "") or ""
+if file_in:
+    filename = file_in.name.lower()
         
     # --- Import FIT / TCX (version stable) ---
     if file_in:

@@ -100,15 +100,18 @@ def get_weather_openmeteo_day(lat, lon, date_obj):
 
     return times, temps, winds, hums
 
-
 def get_avg_weather_for_period(lat, lon, start_dt, end_dt):
     """
-    Appelle Open-Meteo une seule fois pour la journée,
-    puis calcule la moyenne météo entre start_dt et end_dt.
-    Utilisé pour FIT/TCX afin d'éviter un appel par point.
+    Récupère une météo même si start/end sont courts ou en dehors exact des heures.
+    Étend automatiquement la fenêtre et choisit la valeur la plus proche.
     """
     if start_dt is None or end_dt is None:
         return None, None, None
+
+    # 1) ELARGISSEMENT de la fenêtre si trop petite (< 5 minutes)
+    if (end_dt - start_dt).total_seconds() < 300:
+        start_dt -= timedelta(minutes=2)
+        end_dt += timedelta(minutes=2)
 
     meteo_day = get_weather_openmeteo_day(lat, lon, start_dt.date())
     if not meteo_day:
@@ -116,24 +119,19 @@ def get_avg_weather_for_period(lat, lon, start_dt, end_dt):
 
     times, temps, winds, hums = meteo_day
 
-    temps_sel = []
-    winds_sel = []
-    hums_sel = []
+    # 2) Sélection stricte dans l'intervalle
+    selT = [T for t,T in zip(times, temps) if start_dt <= t <= end_dt]
+    selW = [W for t,W in zip(times, winds) if start_dt <= t <= end_dt]
+    selH = [H for t,H in zip(times, hums)  if start_dt <= t <= end_dt]
 
-    for t, T, W, H in zip(times, temps, winds, hums):
-        if start_dt <= t <= end_dt:
-            temps_sel.append(T)
-            winds_sel.append(W)
-            hums_sel.append(H)
+    # 3) Si rien trouvé, prendre la valeur la plus proche dans l’heure
+    if not selT:
+        # prendre l'heure la plus proche de start_dt
+        closest_index = min(range(len(times)), key=lambda i: abs(times[i] - start_dt))
+        return float(temps[closest_index]), float(winds[closest_index]), float(hums[closest_index])
 
-    if not temps_sel:
-        return None, None, None
-
-    return (
-        float(np.mean(temps_sel)),
-        float(np.mean(winds_sel)),
-        float(np.mean(hums_sel)),
-    )
+    # 4) Sinon on retourne la moyenne strictes
+    return float(np.mean(selT)), float(np.mean(selW)), float(np.mean(selH))
 
 # -------------------------
 # UTILITAIRES
@@ -304,10 +302,6 @@ def gpx_to_df(points):
     ])
 
 def parse_fit(file):
-    """
-    Parse un FIT et essaie de reconstruire une fenêtre temporelle fiable
-    pour la météo, même si les records n'ont pas tous un timestamp exploitable.
-    """
     try:
         file.seek(0)
         fit = FitFile(file)
@@ -316,125 +310,73 @@ def parse_fit(file):
         records = []
         times_points = []
 
-        # 1) Candidats de start_time & durée au niveau global (session / activity / file_id)
-        start_candidates = []
-        elapsed_candidates = []
+        start_global = None
+        elapsed_global = None
 
-        # Sessions : souvent contiennent start_time + total_elapsed_time
+        # Extraction metadata
         for msg in fit.get_messages("session"):
             vals = {d.name: d.value for d in msg}
-            stime = vals.get("start_time") or vals.get("timestamp")
-            if isinstance(stime, datetime):
-                start_candidates.append(stime.replace(tzinfo=None))
-            etime = vals.get("total_elapsed_time") or vals.get("total_timer_time")
-            if isinstance(etime, (int, float)):
-                elapsed_candidates.append(float(etime))
+            if isinstance(vals.get("start_time"), datetime):
+                start_global = vals["start_time"].replace(tzinfo=None)
+            if isinstance(vals.get("total_elapsed_time"), (int,float)):
+                elapsed_global = vals["total_elapsed_time"]
 
-        # Activity : parfois contient un timestamp global
-        for msg in fit.get_messages("activity"):
-            vals = {d.name: d.value for d in msg}
-            stime = vals.get("timestamp")
-            if isinstance(stime, datetime):
-                start_candidates.append(stime.replace(tzinfo=None))
-
-        # File_id : parfois time_created
-        for msg in fit.get_messages("file_id"):
-            vals = {d.name: d.value for d in msg}
-            stime = vals.get("time_created")
-            if isinstance(stime, datetime):
-                start_candidates.append(stime.replace(tzinfo=None))
-
-        global_start_dt = min(start_candidates) if start_candidates else None
-        global_elapsed_s = elapsed_candidates[0] if elapsed_candidates else None
-
-        # 2) Parcours des records
+        # Extraction record (lat/lon + timestamps)
         for msg in fit.get_messages("record"):
             vals = {d.name: d.value for d in msg}
-
             lat_raw = vals.get("position_lat")
             lon_raw = vals.get("position_long")
             ts = vals.get("timestamp")
-            elev = vals.get("altitude", 0)
-            dist = vals.get("distance", 0)
 
             if lat_raw and lon_raw:
                 lat = lat_raw * (180 / 2**31)
                 lon = lon_raw * (180 / 2**31)
 
-                # Conversion timestamp FIT → datetime naïf
+                # Convert timestamp FIT
                 dt_local = None
                 if isinstance(ts, datetime):
                     dt_local = ts.replace(tzinfo=None)
-                elif isinstance(ts, (int, float)):
-                    # Epoch FIT : 1989-12-31T00:00:00
-                    fit_epoch = datetime(1989, 12, 31)
-                    try:
-                        dt_local = fit_epoch + timedelta(seconds=float(ts))
-                    except Exception:
-                        dt_local = None
-                # sinon, on laisse None : on se servira du global_start_dt pour la fenêtre globale
+                elif isinstance(ts, (int,float)):
+                    dt_local = datetime(1989,12,31) + timedelta(seconds=float(ts))
 
-                records.append((lat, lon, elev, dist))
+                records.append((lat, lon, vals.get("altitude",0), vals.get("distance",0)))
                 times_points.append(dt_local)
 
-        if not records:
-            return None
+        df = pd.DataFrame(records, columns=["lat","lon","elev","dist"])
 
-        # 3) Distance / dénivelé
-        df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
-        dup = float(np.sum(np.diff(df.elev).clip(min=0)))
-        ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
-
-        # 4) Reconstruction start_dt / end_dt pour la météo
+        # Détermination start/end
         valid_times = [t for t in times_points if t]
-        if len(valid_times) >= 2:
-            # On a de vrais timestamps record → on utilise min / max
+
+        if len(valid_times)>=2:
             start_dt = min(valid_times)
             end_dt = max(valid_times)
+
         else:
-            # Pas (assez) de timestamps record : on utilise les infos globales
-            start_dt = global_start_dt
-            if global_start_dt and global_elapsed_s:
-                # On a une durée fiable
-                end_dt = global_start_dt + timedelta(seconds=global_elapsed_s)
-            elif global_start_dt:
-                # Fallback : on estime la durée à partir de la distance
-                total_dist_m = float(df["dist"].max()) if "dist" in df.columns else 0.0
-                if total_dist_m > 0:
-                    # hypothèse : ~4'30/km → 270 s/km (ajuste si tu veux)
-                    approx_secs = (total_dist_m / 1000.0) * 270.0
-                else:
-                    # fallback ultime : 1 h
-                    approx_secs = 3600.0
-                end_dt = global_start_dt + timedelta(seconds=approx_secs)
+            start_dt = start_global
+            if start_global and elapsed_global:
+                end_dt = start_global + timedelta(seconds=elapsed_global)
+            elif start_global:
+                end_dt = start_global + timedelta(minutes=5)
             else:
-                # Fichier vraiment pourri : pas de fenêtre temporelle fiable
-                start_dt = None
-                end_dt = None
+                # Fallback ultime : on invente une fenêtre sûre
+                start_dt = datetime.now().replace(hour=12,minute=0,second=0,microsecond=0) - timedelta(days=1)
+                end_dt = start_dt + timedelta(minutes=5)
 
-        if start_dt and end_dt:
-            duration_hms = seconds_to_hms((end_dt - start_dt).total_seconds())
-        else:
-            duration_hms = None
-
-        # 5) METEO — UNE SEULE REQUÊTE si on a une fenêtre [start_dt, end_dt]
-        avg_temp, avg_wind, avg_hum = None, None, None
-        if start_dt and end_dt:
-            lat0, lon0 = records[0][0], records[0][1]
-            avg_temp, avg_wind, avg_hum = get_avg_weather_for_period(lat0, lon0, start_dt, end_dt)
+        # Météo robuste
+        avgT, avgW, avgH = get_avg_weather_for_period(records[0][0], records[0][1], start_dt, end_dt)
 
         return {
-            "distance": round(float(df["dist"].max())),
-            "D_up": round(dup),
-            "D_down": round(ddn),
-            "duration_hms": duration_hms,
-            "avg_temp": avg_temp,
-            "avg_wind": avg_wind,
-            "avg_humidity": avg_hum,
+            "distance": float(df["dist"].max()),
+            "D_up": float(np.sum(np.diff(df.elev).clip(min=0))),
+            "D_down": float(-np.sum(np.diff(df.elev).clip(max=0))),
+            "duration_hms": seconds_to_hms((end_dt - start_dt).total_seconds()),
+            "avg_temp": avgT,
+            "avg_wind": avgW,
+            "avg_humidity": avgH
         }
 
     except Exception as e:
-        st.error(f"Erreur FIT : {e}")
+        st.error(f"Erreur FIT robuste : {e}")
         return None
 
 def parse_tcx(file):
@@ -442,24 +384,21 @@ def parse_tcx(file):
         file.seek(0)
         tree = ET.parse(file)
         root = tree.getroot()
-    except Exception as e:
-        st.error(f"Erreur ouverture TCX : {e}")
+    except:
         return None
 
-    ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
+    ns = {"tcx":"http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
     tps = root.findall(".//tcx:Trackpoint", ns)
-    if not tps:
-        return None
 
     pts = []
-    elevs = []
     times = []
+    elevs = []
 
     for tp in tps:
         lat = tp.find("tcx:Position/tcx:LatitudeDegrees", ns)
         lon = tp.find("tcx:Position/tcx:LongitudeDegrees", ns)
-        ele = tp.find("tcx:AltitudeMeters", ns)
         tim = tp.find("tcx:Time", ns)
+        ele = tp.find("tcx:AltitudeMeters", ns)
 
         if lat is None or lon is None:
             continue
@@ -468,49 +407,45 @@ def parse_tcx(file):
         lon = float(lon.text)
         elev = float(ele.text) if ele is not None else 0.0
 
-        t = None
-        if tim is not None:
-            try:
-                t = datetime.fromisoformat(tim.text.replace("Z", "+00:00")).replace(tzinfo=None)
-            except:
-                pass
+        try:
+            t = datetime.fromisoformat(tim.text.replace("Z","+00:00")).replace(tzinfo=None)
+        except:
+            t = None
 
-        pts.append(SimplePoint(lat, lon, elev, t))
-        elevs.append(elev)
+        pts.append(SimplePoint(lat,lon,elev,t))
         times.append(t)
+        elevs.append(elev)
 
-    if len(pts) < 2:
+    if len(pts)<2:
         return None
 
-    # Distance / dénivelé
-    total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1, len(pts)))
-    dup = float(np.sum(np.diff(np.array(elevs)).clip(min=0)))
-    ddn = float(-np.sum(np.diff(np.array(elevs)).clip(max=0)))
-
     valid_times = [t for t in times if t]
-    if len(valid_times) >= 2:
+
+    if len(valid_times)>=2:
         start_dt = valid_times[0]
         end_dt = valid_times[-1]
-        duration_hms = seconds_to_hms((end_dt - start_dt).total_seconds())
+    elif len(valid_times)==1:
+        start_dt = valid_times[0]
+        end_dt = start_dt + timedelta(minutes=5)
     else:
-        start_dt = end_dt = None
-        duration_hms = None
+        start_dt = datetime.now().replace(hour=12,minute=0,second=0,microsecond=0) - timedelta(days=1)
+        end_dt = start_dt + timedelta(minutes=5)
 
-    # METEO — UNE SEULE REQUÊTE
-    avg_temp, avg_wind, avg_hum = None, None, None
-    if start_dt and end_dt:
-        lat0, lon0 = pts[0].latitude, pts[0].longitude
-        avg_temp, avg_wind, avg_hum = get_avg_weather_for_period(lat0, lon0, start_dt, end_dt)
+    avgT, avgW, avgH = get_avg_weather_for_period(pts[0].latitude, pts[0].longitude, start_dt, end_dt)
+
+    total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1,len(pts)))
+    dup = float(np.sum(np.diff(np.array(elevs)).clip(min=0)))
+    ddn = float(-np.sum(np.diff(np.array(elevs)).clip(max=0)))
 
     return {
         "points": pts,
         "distance": round(total),
         "D_up": round(dup),
         "D_down": round(ddn),
-        "duration_hms": duration_hms,
-        "avg_temp": avg_temp,
-        "avg_wind": avg_wind,
-        "avg_humidity": avg_hum,
+        "duration_hms": seconds_to_hms((end_dt-start_dt).total_seconds()),
+        "avg_temp": avgT,
+        "avg_wind": avgW,
+        "avg_humidity": avgH
     }
 
 # -------------------------

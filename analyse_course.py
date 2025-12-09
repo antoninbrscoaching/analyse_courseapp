@@ -1044,18 +1044,8 @@ with c2:
 
 col1, col2 = st.columns(2)
 with col1:
-    lat_input = st.number_input(
-        "Latitude (pour météo refs fallback)",
-        value=48.8566,
-        format="%.6f"
-    )
-    lon_input = st.number_input(
-        "Longitude (pour météo refs fallback)",
-        value=2.3522,
-        format="%.6f"
-    )
-with col2:
     date_course = st.date_input("Date de la course (Jour J)", value=date.today())
+with col2:
     heure_course = st.time_input("Heure de départ (Jour J)", value=time(9, 0))
 
 st.info("La prédiction utilise OpenWeather pour chaque segment de course (température, vent, humidité).")

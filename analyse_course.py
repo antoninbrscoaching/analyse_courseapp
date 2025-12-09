@@ -304,6 +304,10 @@ def gpx_to_df(points):
     ])
 
 def parse_fit(file):
+    """
+    Parse un FIT et essaie de reconstruire une fenêtre temporelle fiable
+    pour la météo, même si les records n'ont pas tous un timestamp exploitable.
+    """
     try:
         file.seek(0)
         fit = FitFile(file)
@@ -312,6 +316,38 @@ def parse_fit(file):
         records = []
         times_points = []
 
+        # 1) Candidats de start_time & durée au niveau global (session / activity / file_id)
+        start_candidates = []
+        elapsed_candidates = []
+
+        # Sessions : souvent contiennent start_time + total_elapsed_time
+        for msg in fit.get_messages("session"):
+            vals = {d.name: d.value for d in msg}
+            stime = vals.get("start_time") or vals.get("timestamp")
+            if isinstance(stime, datetime):
+                start_candidates.append(stime.replace(tzinfo=None))
+            etime = vals.get("total_elapsed_time") or vals.get("total_timer_time")
+            if isinstance(etime, (int, float)):
+                elapsed_candidates.append(float(etime))
+
+        # Activity : parfois contient un timestamp global
+        for msg in fit.get_messages("activity"):
+            vals = {d.name: d.value for d in msg}
+            stime = vals.get("timestamp")
+            if isinstance(stime, datetime):
+                start_candidates.append(stime.replace(tzinfo=None))
+
+        # File_id : parfois time_created
+        for msg in fit.get_messages("file_id"):
+            vals = {d.name: d.value for d in msg}
+            stime = vals.get("time_created")
+            if isinstance(stime, datetime):
+                start_candidates.append(stime.replace(tzinfo=None))
+
+        global_start_dt = min(start_candidates) if start_candidates else None
+        global_elapsed_s = elapsed_candidates[0] if elapsed_candidates else None
+
+        # 2) Parcours des records
         for msg in fit.get_messages("record"):
             vals = {d.name: d.value for d in msg}
 
@@ -325,16 +361,18 @@ def parse_fit(file):
                 lat = lat_raw * (180 / 2**31)
                 lon = lon_raw * (180 / 2**31)
 
-                # conversion timestamp FIT → datetime naïf (UTC)
+                # Conversion timestamp FIT → datetime naïf
                 dt_local = None
                 if isinstance(ts, datetime):
                     dt_local = ts.replace(tzinfo=None)
                 elif isinstance(ts, (int, float)):
+                    # Epoch FIT : 1989-12-31T00:00:00
                     fit_epoch = datetime(1989, 12, 31)
                     try:
                         dt_local = fit_epoch + timedelta(seconds=float(ts))
-                    except:
+                    except Exception:
                         dt_local = None
+                # sinon, on laisse None : on se servira du global_start_dt pour la fenêtre globale
 
                 records.append((lat, lon, elev, dist))
                 times_points.append(dt_local)
@@ -342,21 +380,44 @@ def parse_fit(file):
         if not records:
             return None
 
-        # Distance / dénivelé
+        # 3) Distance / dénivelé
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
         dup = float(np.sum(np.diff(df.elev).clip(min=0)))
         ddn = float(-np.sum(np.diff(df.elev).clip(max=0)))
 
+        # 4) Reconstruction start_dt / end_dt pour la météo
         valid_times = [t for t in times_points if t]
         if len(valid_times) >= 2:
-            start_dt = valid_times[0]
-            end_dt = valid_times[-1]
+            # On a de vrais timestamps record → on utilise min / max
+            start_dt = min(valid_times)
+            end_dt = max(valid_times)
+        else:
+            # Pas (assez) de timestamps record : on utilise les infos globales
+            start_dt = global_start_dt
+            if global_start_dt and global_elapsed_s:
+                # On a une durée fiable
+                end_dt = global_start_dt + timedelta(seconds=global_elapsed_s)
+            elif global_start_dt:
+                # Fallback : on estime la durée à partir de la distance
+                total_dist_m = float(df["dist"].max()) if "dist" in df.columns else 0.0
+                if total_dist_m > 0:
+                    # hypothèse : ~4'30/km → 270 s/km (ajuste si tu veux)
+                    approx_secs = (total_dist_m / 1000.0) * 270.0
+                else:
+                    # fallback ultime : 1 h
+                    approx_secs = 3600.0
+                end_dt = global_start_dt + timedelta(seconds=approx_secs)
+            else:
+                # Fichier vraiment pourri : pas de fenêtre temporelle fiable
+                start_dt = None
+                end_dt = None
+
+        if start_dt and end_dt:
             duration_hms = seconds_to_hms((end_dt - start_dt).total_seconds())
         else:
-            start_dt = end_dt = None
             duration_hms = None
 
-        # METEO — UNE SEULE REQUÊTE
+        # 5) METEO — UNE SEULE REQUÊTE si on a une fenêtre [start_dt, end_dt]
         avg_temp, avg_wind, avg_hum = None, None, None
         if start_dt and end_dt:
             lat0, lon0 = records[0][0], records[0][1]
@@ -911,7 +972,7 @@ for i in range(1, st.session_state.n_refs + 1):
     with c4:
         dup = st.number_input(f"D+ {i}", value=float(default_dup), key=f"dup_{i}")
     with c5:
-        ddn = st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")
+        ddn = st.number_input(f"D- {i}", value=float(ddn), key=f"ddn_{i}") if False else st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")  # petite sécurité au cas où
 
     # --- Import FIT/TCX (dans la boucle) ---
     with c6:

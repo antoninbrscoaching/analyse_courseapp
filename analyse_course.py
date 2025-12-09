@@ -31,66 +31,67 @@ st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé")
 OW_API_KEY = st.secrets["openweather"]["api_key"]
 
 @st.cache_data(show_spinner=False)
-def get_weather_openweather(lat, lon, dt):
+def get_weather_openmeteo_minutely(lat, lon, dt):
     """
-    - Si dt est dans le passé → utilise timemachine
-    - Si dt est dans le futur → utilise forecast (prévision)
+    Météo future ultra-précise : interpolation à la minute.
+    Basée sur Open-Meteo forecast (horaire).
     """
-
     try:
-        timestamp = int(dt.timestamp())
-
-        # -------------------
-        # 1. CAS FUTUR : FORECAST
-        # -------------------
-        if dt > datetime.utcnow():
-            url = (
-                "https://api.openweathermap.org/data/2.5/forecast"
-                f"?lat={lat}&lon={lon}&appid={OW_API_KEY}&units=metric"
-            )
-            r = requests.get(url)
-            data = r.json()
-
-            if "list" not in data:
-                return None
-
-            # Chercher la prévision la plus proche
-            closest = min(
-                data["list"],
-                key=lambda x: abs(datetime.fromtimestamp(x["dt"]) - dt)
-            )
-
-            return {
-                "temp": closest["main"].get("temp"),
-                "wind": closest["wind"].get("speed"),
-                "humidity": closest["main"].get("humidity"),
-            }
-
-        # -------------------
-        # 2. CAS PASSÉ : TIMEMACHINE
-        # -------------------
         url = (
-            "https://api.openweathermap.org/data/3.0/onecall/timemachine"
-            f"?lat={lat}&lon={lon}&dt={timestamp}"
-            f"&appid={OW_API_KEY}&units=metric"
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}"
+            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
+            "&timezone=UTC"
         )
 
         r = requests.get(url)
         data = r.json()
 
-        if "data" not in data or not data["data"]:
+        if "hourly" not in data:
             return None
 
-        entry = data["data"][0]
+        times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
+        temps = data["hourly"]["temperature_2m"]
+        winds = data["hourly"]["wind_speed_10m"]
+        hums  = data["hourly"]["relativehumidity_2m"]
+
+        # Avant/Après dt
+        before = None
+        after = None
+
+        for i in range(len(times) - 1):
+            if times[i] <= dt <= times[i+1]:
+                before = (times[i], temps[i], winds[i], hums[i])
+                after  = (times[i+1], temps[i+1], winds[i+1], hums[i+1])
+                break
+
+        # Si en dehors du range
+        if before is None:
+            idx = min(range(len(times)), key=lambda i: abs(times[i] - dt))
+            return {
+                "temp": temps[idx],
+                "wind": winds[idx],
+                "humidity": hums[idx],
+            }
+
+        # Interpolation temporelle linéaire
+        t1, temp1, wind1, hum1 = before
+        t2, temp2, wind2, hum2 = after
+
+        ratio = (dt - t1).total_seconds() / (t2 - t1).total_seconds()
+
+        temp_interp = temp1 + ratio * (temp2 - temp1)
+        wind_interp = wind1 + ratio * (wind2 - wind1)
+        hum_interp  = hum1  + ratio * (hum2  - hum1)
 
         return {
-            "temp": entry.get("temp"),
-            "wind": entry.get("wind_speed"),
-            "humidity": entry.get("humidity"),
+            "temp": float(temp_interp),
+            "wind": float(wind_interp),
+            "humidity": float(hum_interp),
         }
 
     except Exception as e:
-        st.error(f"Erreur météo OpenWeather : {e}")
+        st.error(f"Erreur météo minute : {e}")
         return None
 
 # -------------------------
@@ -788,8 +789,8 @@ def run_prediction_df(
         # Lat/lon du segment
         lat_seg = np.interp(d, dists_corr, df_points["lat"].values)
         lon_seg = np.interp(d, dists_corr, df_points["lon"].values)
-
-        meteo = get_weather_openweather(lat_seg, lon_seg, passage_dt) if apply_temp else None
+        
+        meteo = get_weather_openmeteo_minutely(lat_seg, lon_seg, passage_dt)
         temp_here = meteo["temp"] if meteo else None
         wind_here = meteo["wind"] if meteo else None
         hum_here = meteo["humidity"] if meteo else None

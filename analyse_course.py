@@ -33,32 +33,61 @@ OW_API_KEY = st.secrets["openweather"]["api_key"]
 @st.cache_data(show_spinner=False)
 def get_weather_openweather(lat, lon, dt):
     """
-    Récupère la météo via OpenWeather (température °C, vent m/s, humidité %)
-    pour une latitude/longitude et un datetime (naïf).
-    Utilise l'endpoint 3.0/onecall/timemachine.
-    → Utilisé pour la PRÉDICTION JOUR J (run_prediction_df).
+    - Si dt est dans le passé → utilise timemachine
+    - Si dt est dans le futur → utilise forecast (prévision)
     """
-    try:
-        timestamp = int(dt.timestamp())
 
+    timestamp = int(dt.timestamp())
+
+    # -------------------
+    # 1. CAS FUTUR : FORECAST
+    # -------------------
+    if dt > datetime.utcnow():
         url = (
-            "https://api.openweathermap.org/data/3.0/onecall/timemachine"
-            f"?lat={lat}&lon={lon}&dt={timestamp}"
-            f"&appid={OW_API_KEY}&units=metric"
+            "https://api.openweathermap.org/data/2.5/forecast"
+            f"?lat={lat}&lon={lon}&appid={OW_API_KEY}&units=metric"
         )
-
         r = requests.get(url)
         data = r.json()
 
-        if "data" not in data or not data["data"]:
+        if "list" not in data:
             return None
 
-        entry = data["data"][0]
+        # Chercher la prévision la plus proche
+        closest = min(
+            data["list"],
+            key=lambda x: abs(datetime.fromtimestamp(x["dt"]) - dt)
+        )
+
         return {
-            "temp": entry.get("temp"),
-            "wind": entry.get("wind_speed"),
-            "humidity": entry.get("humidity"),
+            "temp": closest["main"].get("temp"),
+            "wind": closest["wind"].get("speed"),
+            "humidity": closest["main"].get("humidity"),
         }
+
+    # -------------------
+    # 2. CAS PASSÉ : TIMEMACHINE
+    # -------------------
+    url = (
+        "https://api.openweathermap.org/data/3.0/onecall/timemachine"
+        f"?lat={lat}&lon={lon}&dt={timestamp}"
+        f"&appid={OW_API_KEY}&units=metric"
+    )
+
+    r = requests.get(url)
+    data = r.json()
+
+    if "data" not in data or not data["data"]:
+        return None
+
+    entry = data["data"][0]
+
+    return {
+        "temp": entry.get("temp"),
+        "wind": entry.get("wind_speed"),
+        "humidity": entry.get("humidity"),
+    }
+
     except Exception as e:
         st.error(f"Erreur météo OpenWeather : {e}")
         return None

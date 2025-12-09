@@ -797,9 +797,11 @@ with cols[1]:
 
 # Collect raw refs (no recalculation here)
 refs_raw = []
+
 for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
+
     with c1:
         use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
 
@@ -816,58 +818,48 @@ for i in range(1, st.session_state.n_refs + 1):
         dup = st.number_input(f"D+ {i}", value=float(default_dup), key=f"dup_{i}")
     with c5:
         ddn = st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")
+
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}") if use_file else None
 
+    # valeurs météo par défaut
     duration_hms_file = None
     avg_temp_ref = None
     avg_wind_ref = None
     avg_hum_ref = None
 
-if file_in:
-    filename = file_in.name.lower()
-        
-    # --- Import FIT / TCX (version stable) ---
+    # --- Import FIT / TCX (DANS LA BOUCLE) ---
     if file_in:
         filename = file_in.name.lower()
 
-# --- Import FIT / TCX (version stable) ---
-if file_in:
-    filename = file_in.name.lower()
+        if filename.endswith(".fit"):
+            fit_data = parse_fit(file_in)
+            if fit_data:
+                dist = fit_data["distance"]
+                dup = fit_data["D_up"]
+                ddn = fit_data["D_down"]
+                duration_hms_file = fit_data["duration_hms"]
 
-    # --- FIT ---
-    if filename.endswith(".fit"):
-        fit_data = parse_fit(file_in)
-        if fit_data:
-            dist = fit_data["distance"]
-            dup = fit_data["D_up"]
-            ddn = fit_data["D_down"]
-            duration_hms_file = fit_data["duration_hms"]
+                avg_temp_ref = fit_data["avg_temp"]
+                avg_wind_ref = fit_data["avg_wind"]
+                avg_hum_ref  = fit_data["avg_humidity"]
 
-            avg_temp_ref = fit_data.get("avg_temp")
-            avg_wind_ref = fit_data.get("avg_wind")
-            avg_hum_ref  = fit_data.get("avg_humidity")
+        elif filename.endswith(".tcx"):
+            tcx_data = parse_tcx(file_in)
+            if tcx_data:
+                dist = tcx_data["distance"]
+                dup = tcx_data["D_up"]
+                ddn = tcx_data["D_down"]
+                duration_hms_file = tcx_data["duration_hms"]
 
-    # --- TCX ---
-    elif filename.endswith(".tcx"):
-        tcx_data = parse_tcx(file_in)
-        if tcx_data:
-            dist = tcx_data["distance"]
-            dup = tcx_data["D_up"]
-            ddn = tcx_data["D_down"]
-            duration_hms_file = tcx_data["duration_hms"]
+                avg_temp_ref = tcx_data["avg_temp"]
+                avg_wind_ref = tcx_data["avg_wind"]
+                avg_hum_ref  = tcx_data["avg_humidity"]
 
-            avg_temp_ref = tcx_data.get("avg_temp")
-            avg_wind_ref = tcx_data.get("avg_wind")
-            avg_hum_ref  = tcx_data.get("avg_humidity")
+    # temps utilisé
+    temps_effectif = duration_hms_file if duration_hms_file else temps
 
-
-    # temps effectif utilisé
-    if duration_hms_file:
-        temps_effectif = duration_hms_file
-    else:
-        temps_effectif = temps
-
+    # append DANS LA BOUCLE
     refs_raw.append({
         "distance": float(dist),
         "temps": str(temps_effectif),

@@ -477,22 +477,47 @@ def clean_time_input(v):
 # -------------------------
 def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     """
-    ref: dict avec 'distance' (m), 'temps' (h:mm:ss or secs), 'D_up', 'D_down'
-    On retire l'effet dénivelé en divisant par factor_elev,
-    puis on considère conditions idéales (temp_mult=1).
+    Recalibre une référence dans des conditions idéales :
+    - plat (0 %)
+    - température optimale choisie par l’utilisateur (opt_temp)
     """
+
+    # --- 1) Temps brut
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
+
+    # --- 2) Retirer effet dénivelé
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
     seg_len = seg_len if seg_len > 0 else 1000.0
+
     up_factor = (k_up - 1.0) * (D_up / seg_len)
     down_factor = (1.0 - k_down) * (D_down / seg_len)
     factor_elev = 1.0 + up_factor + down_factor
     if factor_elev == 0:
         factor_elev = 1.0
+
     secs_no_elev = secs / factor_elev
-    return max(0.0, secs_no_elev)
+
+    # --- 3) Retirer effet température réelle (si connue)
+    temp_real = ref.get("avg_temp")
+    if temp_real is not None:
+        mult_real = temp_multiplier_nonlin(temp_real, opt_temp=opt_temp,
+                                           k_hot=k_temp_hot, k_cold=k_temp_cold)
+        if mult_real != 0:
+            secs_no_temp = secs_no_elev / mult_real
+        else:
+            secs_no_temp = secs_no_elev
+    else:
+        secs_no_temp = secs_no_elev
+
+    # --- 4) Appliquer l'effet température optimale définie par l’utilisateur
+    mult_opt = temp_multiplier_nonlin(opt_temp, opt_temp=opt_temp,
+                                      k_hot=k_temp_hot, k_cold=k_temp_cold)
+
+    secs_ideal = secs_no_temp * mult_opt
+
+    return max(0.0, secs_ideal)
 
 def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None):
     """

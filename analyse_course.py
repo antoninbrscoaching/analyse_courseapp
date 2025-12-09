@@ -799,17 +799,21 @@ with cols[1]:
 refs_raw = []
 
 for i in range(1, st.session_state.n_refs + 1):
+
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
 
+    # --- Checkbox : fichier FIT/TCX ou manuel ---
     with c1:
         use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
 
+    # valeurs par défaut
     default_dist = st.session_state.get(f"dist_{i}", 5000 * i)
     default_temps = st.session_state.get(f"temps_{i}", "0:40:00")
     default_dup = st.session_state.get(f"dup_{i}", 0.0)
     default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
 
+    # --- Entrées manuelles ---
     with c2:
         dist = st.number_input(f"Dist {i} (m)", value=float(default_dist), key=f"dist_{i}")
     with c3:
@@ -819,16 +823,17 @@ for i in range(1, st.session_state.n_refs + 1):
     with c5:
         ddn = st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")
 
+    # --- Import FIT/TCX (dans la boucle) ---
     with c6:
-        file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}") if use_file else None
+        file_in = st.file_uploader(
+            f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}"
+        ) if use_file else None
 
-    # valeurs météo par défaut
     duration_hms_file = None
     avg_temp_ref = None
     avg_wind_ref = None
     avg_hum_ref = None
 
-    # --- Import FIT / TCX (DANS LA BOUCLE) ---
     if file_in:
         filename = file_in.name.lower()
 
@@ -859,7 +864,7 @@ for i in range(1, st.session_state.n_refs + 1):
     # temps utilisé
     temps_effectif = duration_hms_file if duration_hms_file else temps
 
-    # append DANS LA BOUCLE
+    # --- Ajout à refs_raw (IMPORTANT : dans la boucle) ---
     refs_raw.append({
         "distance": float(dist),
         "temps": str(temps_effectif),

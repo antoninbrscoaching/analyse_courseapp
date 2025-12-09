@@ -37,56 +37,57 @@ def get_weather_openweather(lat, lon, dt):
     - Si dt est dans le futur → utilise forecast (prévision)
     """
 
-    timestamp = int(dt.timestamp())
+    try:
+        timestamp = int(dt.timestamp())
 
-    # -------------------
-    # 1. CAS FUTUR : FORECAST
-    # -------------------
-    if dt > datetime.utcnow():
+        # -------------------
+        # 1. CAS FUTUR : FORECAST
+        # -------------------
+        if dt > datetime.utcnow():
+            url = (
+                "https://api.openweathermap.org/data/2.5/forecast"
+                f"?lat={lat}&lon={lon}&appid={OW_API_KEY}&units=metric"
+            )
+            r = requests.get(url)
+            data = r.json()
+
+            if "list" not in data:
+                return None
+
+            # Chercher la prévision la plus proche
+            closest = min(
+                data["list"],
+                key=lambda x: abs(datetime.fromtimestamp(x["dt"]) - dt)
+            )
+
+            return {
+                "temp": closest["main"].get("temp"),
+                "wind": closest["wind"].get("speed"),
+                "humidity": closest["main"].get("humidity"),
+            }
+
+        # -------------------
+        # 2. CAS PASSÉ : TIMEMACHINE
+        # -------------------
         url = (
-            "https://api.openweathermap.org/data/2.5/forecast"
-            f"?lat={lat}&lon={lon}&appid={OW_API_KEY}&units=metric"
+            "https://api.openweathermap.org/data/3.0/onecall/timemachine"
+            f"?lat={lat}&lon={lon}&dt={timestamp}"
+            f"&appid={OW_API_KEY}&units=metric"
         )
+
         r = requests.get(url)
         data = r.json()
 
-        if "list" not in data:
+        if "data" not in data or not data["data"]:
             return None
 
-        # Chercher la prévision la plus proche
-        closest = min(
-            data["list"],
-            key=lambda x: abs(datetime.fromtimestamp(x["dt"]) - dt)
-        )
+        entry = data["data"][0]
 
         return {
-            "temp": closest["main"].get("temp"),
-            "wind": closest["wind"].get("speed"),
-            "humidity": closest["main"].get("humidity"),
+            "temp": entry.get("temp"),
+            "wind": entry.get("wind_speed"),
+            "humidity": entry.get("humidity"),
         }
-
-    # -------------------
-    # 2. CAS PASSÉ : TIMEMACHINE
-    # -------------------
-    url = (
-        "https://api.openweathermap.org/data/3.0/onecall/timemachine"
-        f"?lat={lat}&lon={lon}&dt={timestamp}"
-        f"&appid={OW_API_KEY}&units=metric"
-    )
-
-    r = requests.get(url)
-    data = r.json()
-
-    if "data" not in data or not data["data"]:
-        return None
-
-    entry = data["data"][0]
-
-    return {
-        "temp": entry.get("temp"),
-        "wind": entry.get("wind_speed"),
-        "humidity": entry.get("humidity"),
-    }
 
     except Exception as e:
         st.error(f"Erreur météo OpenWeather : {e}")

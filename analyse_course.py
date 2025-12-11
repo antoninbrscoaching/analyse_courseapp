@@ -198,6 +198,30 @@ def seconds_to_hms(seconds: float) -> str:
     except Exception:
         return "0:00:00"
 
+def hms_to_timedelta(hms: str) -> timedelta:
+    """
+    Convertit une chaîne 'hh:mm:ss' (ou 'mm:ss' / 'ss') en timedelta.
+    """
+    if hms is None:
+        return timedelta(seconds=0)
+    try:
+        parts = str(hms).strip().split(":")
+        parts = [int(p) for p in parts]
+        if len(parts) == 3:
+            h, m, s = parts
+        elif len(parts) == 2:
+            h = 0
+            m, s = parts
+        elif len(parts) == 1:
+            h = 0
+            m = 0
+            s = parts[0]
+        else:
+            return timedelta(seconds=0)
+        return timedelta(hours=h, minutes=m, seconds=s)
+    except Exception:
+        return timedelta(seconds=0)
+
 def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
     if seconds_per_km <= 0 or math.isnan(seconds_per_km) or math.isinf(seconds_per_km):
         return "0:00"
@@ -332,11 +356,11 @@ def gpx_to_df(points):
         for p in points
     ])
 
-# ---------- AJOUT : extraction d'un segment temporel FIT/TCX ----------
-def extract_segment_from_points(points, start_min, end_min):
+# ---------- MODIF : extraction d'un segment temporel FIT/TCX en timedelta ----------
+def extract_segment_from_points(points, start_td, end_td):
     """
     points : liste de dicts (FIT) ou SimplePoint (TCX)
-    start_min / end_min : intervalle en minutes depuis le début
+    start_td / end_td : intervalle en timedelta depuis le début
     """
     if not points or len(points) < 2:
         return points
@@ -352,8 +376,8 @@ def extract_segment_from_points(points, start_min, end_min):
         return points
 
     t0 = min(times)
-    start_dt = t0 + timedelta(minutes=start_min)
-    end_dt = t0 + timedelta(minutes=end_min)
+    start_dt = t0 + start_td
+    end_dt = t0 + end_td
 
     seg = [p for p in points if (get_time(p) is not None and start_dt <= get_time(p) <= end_dt)]
 
@@ -425,7 +449,7 @@ def parse_fit(file):
         # Météo robuste
         avgT, avgW, avgH = get_avg_weather_for_period(records[0][0], records[0][1], start_dt, end_dt)
 
-        # ---------- AJOUT : on renvoie aussi tous les points ----------
+        # ---------- on renvoie aussi tous les points ----------
         return {
             "points": [
                 {
@@ -445,7 +469,6 @@ def parse_fit(file):
             "avg_wind": avgW,
             "avg_humidity": avgH
         }
-        # --------------------------------------------------------------
 
     except Exception as e:
         st.error(f"Erreur FIT robuste : {e}")
@@ -979,7 +1002,7 @@ for i in range(1, st.session_state.n_refs + 1):
     with c4:
         dup = st.number_input(f"D+ {i}", value=float(default_dup), key=f"dup_{i}")
     with c5:
-        ddn = st.number_input(f"D- {i}", value=float(ddn), key=f"ddn_{i}") if False else st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")  # petite sécurité au cas où
+        ddn = st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")  # petite sécurité au cas où
 
     # --- Import FIT/TCX (dans la boucle) ---
     with c6:
@@ -987,12 +1010,14 @@ for i in range(1, st.session_state.n_refs + 1):
             f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}"
         ) if use_file else None
 
-    # ---------- AJOUT : sélection d'intervalle temporel ----------
-    st.markdown("⏳ Utiliser seulement une partie de la séance (si FIT/TCX) ?")
+    # ---------- NOUVELLE SÉLECTION INTERVALLE HH:MM:SS SUR UNE LIGNE ----------
     col_s, col_e = st.columns(2)
-    start_min = col_s.number_input(f"Début (min) réf {i}", value=0.0, step=0.5, key=f"start_{i}")
-    end_min = col_e.number_input(f"Fin (min) réf {i}", value=999.0, step=0.5, key=f"end_{i}")
-    # -------------------------------------------------------------
+    start_hms = col_s.text_input(f"Début réf {i} (hh:mm:ss)", value="00:00:00", key=f"start_{i}")
+    end_hms = col_e.text_input(f"Fin réf {i} (hh:mm:ss)", value="23:59:59", key=f"end_{i}")
+
+    start_td = hms_to_timedelta(start_hms)
+    end_td = hms_to_timedelta(end_hms)
+    # --------------------------------------------------------------------------
 
     duration_hms_file = None
     avg_temp_ref = None
@@ -1027,8 +1052,9 @@ for i in range(1, st.session_state.n_refs + 1):
                 avg_wind_ref = tcx_data["avg_wind"]
                 avg_hum_ref  = tcx_data["avg_humidity"]
 
-        # ---------- AJOUT : découpe de la séance sur l'intervalle choisi ----------
-        if (start_min > 0.0 or end_min < 999.0):
+        # ---------- DÉCOUPE DE LA SÉANCE SUR L'INTERVALLE CHOISI ----------
+        # On considère qu'on découpe si on n'est pas exactement 0 -> 23:59:59
+        if (start_td.total_seconds() > 0 or end_td.total_seconds() < 86399):
             pts = None
             if filename.endswith(".fit") and fit_data and "points" in fit_data:
                 pts = fit_data["points"]
@@ -1036,7 +1062,7 @@ for i in range(1, st.session_state.n_refs + 1):
                 pts = tcx_data["points"]
 
             if pts:
-                seg = extract_segment_from_points(pts, start_min, end_min)
+                seg = extract_segment_from_points(pts, start_td, end_td)
 
                 dist_seg = 0.0
                 elevs_seg = []
@@ -1099,8 +1125,11 @@ for i in range(1, st.session_state.n_refs + 1):
         "avg_temp": avg_temp_ref,
         "avg_wind": avg_wind_ref,
         "avg_humidity": avg_hum_ref,
-        "start_min": start_min,
-        "end_min": end_min,
+        # nouveaux champs intervalle
+        "start_td": start_td,
+        "end_td": end_td,
+        "start_hms": start_hms,
+        "end_hms": end_hms,
     })
 
 # Récap brut
@@ -1110,7 +1139,8 @@ for idx, r in enumerate(refs_raw, start=1):
         f"Réf {idx} — Dist: {r['distance']:.0f} m | Brut: {r['temps']} | "
         f"D+ {r['D_up']:.0f} m / D- {r['D_down']:.0f} m | "
         f"Dur file: {r.get('duration_hms_file')} | "
-        f"Temp moy: {r.get('avg_temp')}°C"
+        f"Temp moy: {r.get('avg_temp')}°C | "
+        f"Intervalle: {r.get('start_hms','0:00:00')} → {r.get('end_hms','fin')}"
     )
 
 # -------------------------

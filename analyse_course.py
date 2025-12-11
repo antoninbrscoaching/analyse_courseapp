@@ -332,6 +332,35 @@ def gpx_to_df(points):
         for p in points
     ])
 
+# ---------- AJOUT : extraction d'un segment temporel FIT/TCX ----------
+def extract_segment_from_points(points, start_min, end_min):
+    """
+    points : liste de dicts (FIT) ou SimplePoint (TCX)
+    start_min / end_min : intervalle en minutes depuis le début
+    """
+    if not points or len(points) < 2:
+        return points
+
+    # Fonction pour récupérer le temps selon le type d'objet
+    def get_time(p):
+        if isinstance(p, dict):
+            return p.get("time", None)
+        return getattr(p, "time", None)
+
+    times = [get_time(p) for p in points if get_time(p) is not None]
+    if len(times) < 2:
+        return points
+
+    t0 = min(times)
+    start_dt = t0 + timedelta(minutes=start_min)
+    end_dt = t0 + timedelta(minutes=end_min)
+
+    seg = [p for p in points if (get_time(p) is not None and start_dt <= get_time(p) <= end_dt)]
+
+    # Si trop peu de points dans le segment, on retombe sur la séance entière
+    return seg if len(seg) >= 2 else points
+# ----------------------------------------------------------------------
+
 def parse_fit(file):
     try:
         file.seek(0)
@@ -396,7 +425,18 @@ def parse_fit(file):
         # Météo robuste
         avgT, avgW, avgH = get_avg_weather_for_period(records[0][0], records[0][1], start_dt, end_dt)
 
+        # ---------- AJOUT : on renvoie aussi tous les points ----------
         return {
+            "points": [
+                {
+                    "lat": r[0],
+                    "lon": r[1],
+                    "elev": r[2],
+                    "dist": r[3],
+                    "time": t
+                }
+                for (r, t) in zip(records, times_points)
+            ],
             "distance": float(df["dist"].max()),
             "D_up": float(np.sum(np.diff(df.elev).clip(min=0))),
             "D_down": float(-np.sum(np.diff(df.elev).clip(max=0))),
@@ -405,6 +445,7 @@ def parse_fit(file):
             "avg_wind": avgW,
             "avg_humidity": avgH
         }
+        # --------------------------------------------------------------
 
     except Exception as e:
         st.error(f"Erreur FIT robuste : {e}")
@@ -946,14 +987,22 @@ for i in range(1, st.session_state.n_refs + 1):
             f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}"
         ) if use_file else None
 
+    # ---------- AJOUT : sélection d'intervalle temporel ----------
+    st.markdown("⏳ Utiliser seulement une partie de la séance (si FIT/TCX) ?")
+    col_s, col_e = st.columns(2)
+    start_min = col_s.number_input(f"Début (min) réf {i}", value=0.0, step=0.5, key=f"start_{i}")
+    end_min = col_e.number_input(f"Fin (min) réf {i}", value=999.0, step=0.5, key=f"end_{i}")
+    # -------------------------------------------------------------
+
     duration_hms_file = None
     avg_temp_ref = None
     avg_wind_ref = None
     avg_hum_ref = None
+    fit_data = None
+    tcx_data = None
+    filename = file_in.name.lower() if file_in else ""
 
     if file_in:
-        filename = file_in.name.lower()
-
         if filename.endswith(".fit"):
             fit_data = parse_fit(file_in)
             if fit_data:
@@ -978,6 +1027,65 @@ for i in range(1, st.session_state.n_refs + 1):
                 avg_wind_ref = tcx_data["avg_wind"]
                 avg_hum_ref  = tcx_data["avg_humidity"]
 
+        # ---------- AJOUT : découpe de la séance sur l'intervalle choisi ----------
+        if (start_min > 0.0 or end_min < 999.0):
+            pts = None
+            if filename.endswith(".fit") and fit_data and "points" in fit_data:
+                pts = fit_data["points"]
+            elif filename.endswith(".tcx") and tcx_data and "points" in tcx_data:
+                pts = tcx_data["points"]
+
+            if pts:
+                seg = extract_segment_from_points(pts, start_min, end_min)
+
+                dist_seg = 0.0
+                elevs_seg = []
+                times_seg = []
+
+                for j in range(1, len(seg)):
+                    p1 = seg[j-1]
+                    p2 = seg[j]
+
+                    if isinstance(p1, dict):
+                        lat1 = p1["lat"]
+                        lon1 = p1["lon"]
+                        elev1 = p1["elev"]
+                        t1 = p1["time"]
+                    else:
+                        lat1 = p1.latitude
+                        lon1 = p1.longitude
+                        elev1 = p1.elevation
+                        t1 = p1.time
+
+                    if isinstance(p2, dict):
+                        lat2 = p2["lat"]
+                        lon2 = p2["lon"]
+                        elev2 = p2["elev"]
+                        t2 = p2["time"]
+                    else:
+                        lat2 = p2.latitude
+                        lon2 = p2.longitude
+                        elev2 = p2.elevation
+                        t2 = p2.time
+
+                    dist_seg += haversine_m(lat1, lon1, lat2, lon2)
+                    elevs_seg.append(elev2)
+                    if t2:
+                        times_seg.append(t2)
+
+                if len(elevs_seg) >= 2:
+                    dup = float(np.sum(np.diff(np.array(elevs_seg)).clip(min=0)))
+                    ddn = float(-np.sum(np.diff(np.array(elevs_seg)).clip(max=0)))
+                else:
+                    dup = 0.0
+                    ddn = 0.0
+
+                if len(times_seg) >= 2:
+                    duration_hms_file = seconds_to_hms((times_seg[-1] - times_seg[0]).total_seconds())
+
+                dist = round(dist_seg)
+        # -------------------------------------------------------------------------
+
     # temps utilisé
     temps_effectif = duration_hms_file if duration_hms_file else temps
 
@@ -991,6 +1099,8 @@ for i in range(1, st.session_state.n_refs + 1):
         "avg_temp": avg_temp_ref,
         "avg_wind": avg_wind_ref,
         "avg_humidity": avg_hum_ref,
+        "start_min": start_min,
+        "end_min": end_min,
     })
 
 # Récap brut

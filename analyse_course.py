@@ -359,34 +359,42 @@ def gpx_to_df(points):
 # ---------- MODIF : extraction d'un segment temporel FIT/TCX en timedelta ----------
 def extract_segment_from_points(points, start_td, end_td):
     """
-    points : liste de dicts (FIT) ou SimplePoint (TCX)
-    start_td / end_td : intervalle en timedelta depuis le début
+    Extrait un segment temporel d'une séance FIT/TCX.
+    points : dict (FIT) ou SimplePoint (TCX)
+    start_td / end_td : timedelta depuis le début de la séance
     """
     if not points or len(points) < 2:
         return points
 
-    # Fonction pour récupérer le temps selon le type d'objet
+    # Fonction générique pour récupérer le timestamp
     def get_time(p):
         if isinstance(p, dict):
             return p.get("time", None)
         return getattr(p, "time", None)
 
+    # Récupération de t0
     times = [get_time(p) for p in points if get_time(p) is not None]
     if len(times) < 2:
         return points
 
     t0 = min(times)
-    start_dt = t0 + timedelta(minutes=start_min)
-    end_dt = t0 + timedelta(minutes=end_min)
 
-    #🔧 Correction : inclure pleinement la borne supérieure
+    # Nouveaux intervalles (timedelta)
+    start_dt = t0 + start_td
+    end_dt = t0 + end_td
+
+    # 🔧 Correction : inclure la borne supérieure (évite les allures trop rapides)
     end_dt += timedelta(seconds=1)
 
-   
-    seg = [p for p in points if (get_time(p) is not None and start_dt <= get_time(p) <= end_dt)]
+    # Filtrage segment
+    seg = [
+        p for p in points
+        if (get_time(p) is not None and start_dt <= get_time(p) <= end_dt)
+    ]
 
-    # Si trop peu de points dans le segment, on retombe sur la séance entière
+    # Si trop court, on renvoie la séance complète
     return seg if len(seg) >= 2 else points
+
 # ----------------------------------------------------------------------
 
 def parse_fit(file):

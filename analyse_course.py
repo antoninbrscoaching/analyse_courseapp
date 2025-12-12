@@ -376,9 +376,13 @@ def extract_segment_from_points(points, start_td, end_td):
         return points
 
     t0 = min(times)
-    start_dt = t0 + start_td
-    end_dt = t0 + end_td
+    start_dt = t0 + timedelta(minutes=start_min)
+    end_dt = t0 + timedelta(minutes=end_min)
 
+    #🔧 Correction : inclure pleinement la borne supérieure
+    end_dt += timedelta(seconds=1)
+
+   
     seg = [p for p in points if (get_time(p) is not None and start_dt <= get_time(p) <= end_dt)]
 
     # Si trop peu de points dans le segment, on retombe sur la séance entière

@@ -541,8 +541,8 @@ def parse_tcx(file):
     avgT, avgW, avgH = get_avg_weather_for_period(pts[0].latitude, pts[0].longitude, start_dt, end_dt)
 
     total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1,len(pts)))
-    dup = float(np.sum(np.diff(np.array(elevs)).clip(min=0)))
-    ddn = float(-np.sum(np.diff(np.array(elevs)).clip(max=0)))
+    dup, ddn = compute_dplus_dminus(elevs)
+ 
 
     return {
         "points": pts,
@@ -574,6 +574,24 @@ def safe_float(val, default=0.0):
         return float(val)
     except Exception:
         return float(default)
+
+def compute_dplus_dminus(elevs):
+    """
+    Calcul robuste D+ / D-
+    - ignore None / NaN / valeurs non numériques
+    - évite les crashs np.diff
+    """
+    try:
+        arr = np.array([safe_float(e, np.nan) for e in elevs], dtype=float)
+        arr = arr[~np.isnan(arr)]
+        if arr.size < 2:
+            return 0.0, 0.0
+        diffs = np.diff(arr)
+        dup = float(np.sum(np.clip(diffs, a_min=0, a_max=None)))
+        ddn = float(-np.sum(np.clip(diffs, a_min=None, a_max=0)))
+        return dup, ddn
+    except Exception:
+        return 0.0, 0.0
 
 def clean_time_input(v):
     if v is None:
@@ -1111,12 +1129,8 @@ for i in range(1, st.session_state.n_refs + 1):
                     if t2:
                         times_seg.append(t2)
 
-                if len(elevs_seg) >= 2:
-                    dup = float(np.sum(np.diff(np.array(elevs_seg)).clip(min=0)))
-                    ddn = float(-np.sum(np.diff(np.array(elevs_seg)).clip(max=0)))
-                else:
-                    dup = 0.0
-                    ddn = 0.0
+                dup, ddn = compute_dplus_dminus(elevs_seg)
+
 
                 if len(times_seg) >= 2:
                     duration_hms_file = seconds_to_hms((times_seg[-1] - times_seg[0]).total_seconds())

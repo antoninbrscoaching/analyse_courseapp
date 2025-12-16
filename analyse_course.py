@@ -168,22 +168,41 @@ def get_avg_weather_for_period(lat, lon, start_dt, end_dt):
 # UTILITAIRES
 # -------------------------
 def hms_to_seconds(hms: str) -> int:
+    """
+    Accepte:
+      - hh:mm:ss
+      - mm:ss
+      - hh:mm (heuristique)
+      - ss
+    Heuristique:
+      - si 2 champs et le 1er >= 10 => mm:ss (ex: 18:30)
+      - sinon => hh:mm (ex: 1:40 = 1h40)
+    """
     if hms is None:
         return 0
     try:
         parts = str(hms).strip().split(":")
         parts = [int(p) for p in parts]
+
         if len(parts) == 3:
             h, m, s = parts
         elif len(parts) == 2:
-            h = 0
-            m, s = parts
+            a, b = parts
+            if a >= 10:
+                # mm:ss
+                h, m, s = 0, a, b
+            else:
+                # hh:mm
+                h, m, s = a, b, 0
         elif len(parts) == 1:
-            h = 0
-            m = 0
-            s = parts[0]
+            h, m, s = 0, 0, parts[0]
         else:
             return 0
+
+        # garde-fous
+        if m < 0 or s < 0 or m > 59 or s > 59 or h < 0:
+            return 0
+
         return max(0, h * 3600 + m * 60 + s)
     except Exception:
         return 0
@@ -306,6 +325,7 @@ def fit_loglog_model(refs):
     if len(X) >= 2:
         coeffs = np.polyfit(X, Y, 1)  # Y = K * X + log(a)
         K = float(coeffs[0])
+        K = max(0.85, min(1.25, K))
         loga = float(coeffs[1])
         a = math.exp(loga)
         if not (0 < a < 1e6):  # sanity
@@ -1023,6 +1043,16 @@ for i in range(1, st.session_state.n_refs + 1):
     default_temps = st.session_state.get(f"temps_{i}", "0:40:00")
     default_dup = st.session_state.get(f"dup_{i}", 0.0)
     default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
+
+st.subheader("🧪 Contrôle : allure implicite des références")
+for idx, r in enumerate(refs_raw, start=1):
+    secs = hms_to_seconds(r["temps"])
+    dist_km = float(r["distance"]) / 1000.0 if r["distance"] else 0.0
+    if secs > 0 and dist_km > 0:
+        pace = secs / dist_km
+        st.write(f"Réf {idx} — {r['distance']:.0f} m en {r['temps']} → {pace_seconds_to_str_per_km(pace)}/km")
+        if pace < 150:  # < 2:30/km
+            st.warning(f"⚠️ Réf {idx}: allure extrêmement rapide → vérifie le format du temps (ex: 1:40 = 1h40 ou 1min40).")
 
     # --- Entrées manuelles ---
     with c2:

@@ -1,3 +1,7 @@
+# =========================
+# BLOC 1/4 — Imports + Météo (timezone corrigée) + Utilitaires + Helpers pente (grade)
+# =========================
+
 # analyse_course_refactor.py
 import streamlit as st
 import math
@@ -20,34 +24,32 @@ st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé")
 
 # ============================================================
 # MÉTÉO
-#   - OpenWeather : prédiction jour J (segment par segment)
-#   - Open-Meteo  : historique pour les références FIT/TCX
+#   - Open-Meteo forecast : prédiction jour J (segment par segment)
+#   - Open-Meteo archive  : historique pour les références FIT/TCX
+#   ✅ CORRECTION: timezone=auto pour cohérence avec tes datetime locaux
 # ============================================================
 
-# -------------------------
-# MÉTÉO - OpenWeather (Jour J)
-# -------------------------
-
-OW_API_KEY = st.secrets["openweather"]["api_key"]
+OW_API_KEY = st.secrets["openweather"]["api_key"]  # conservé (même si tu utilises Open-Meteo)
 
 @st.cache_data(show_spinner=False)
 def get_weather_openmeteo_minutely(lat, lon, dt):
     """
-    Météo future ultra-précise : interpolation à la minute.
-    Basée sur Open-Meteo forecast (horaire).
+    Météo future : interpolation à la minute
+    Basée sur Open-Meteo forecast (horaire)
+    ✅ timezone=auto (au lieu de UTC) pour aligner dt (local) avec les time de l'API
     """
     try:
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}"
             "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
-            "&timezone=UTC"
+            "&timezone=auto"
         )
 
-        r = requests.get(url)
+        r = requests.get(url, timeout=15)
         data = r.json()
 
-        if "hourly" not in data:
+        if "hourly" not in data or "time" not in data["hourly"]:
             return None
 
         times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
@@ -58,88 +60,82 @@ def get_weather_openmeteo_minutely(lat, lon, dt):
         # Avant/Après dt
         before = None
         after = None
-
         for i in range(len(times) - 1):
-            if times[i] <= dt <= times[i+1]:
+            if times[i] <= dt <= times[i + 1]:
                 before = (times[i], temps[i], winds[i], hums[i])
-                after  = (times[i+1], temps[i+1], winds[i+1], hums[i+1])
+                after  = (times[i + 1], temps[i + 1], winds[i + 1], hums[i + 1])
                 break
 
-        # Si en dehors du range
+        # Si en dehors du range → point le plus proche
         if before is None:
             idx = min(range(len(times)), key=lambda i: abs(times[i] - dt))
-            return {
-                "temp": temps[idx],
-                "wind": winds[idx],
-                "humidity": hums[idx],
-            }
+            return {"temp": float(temps[idx]), "wind": float(winds[idx]), "humidity": float(hums[idx])}
 
         # Interpolation temporelle linéaire
         t1, temp1, wind1, hum1 = before
         t2, temp2, wind2, hum2 = after
 
-        ratio = (dt - t1).total_seconds() / (t2 - t1).total_seconds()
+        denom = (t2 - t1).total_seconds()
+        if denom <= 0:
+            return {"temp": float(temp1), "wind": float(wind1), "humidity": float(hum1)}
+
+        ratio = (dt - t1).total_seconds() / denom
 
         temp_interp = temp1 + ratio * (temp2 - temp1)
         wind_interp = wind1 + ratio * (wind2 - wind1)
         hum_interp  = hum1  + ratio * (hum2  - hum1)
 
-        return {
-            "temp": float(temp_interp),
-            "wind": float(wind_interp),
-            "humidity": float(hum_interp),
-        }
+        return {"temp": float(temp_interp), "wind": float(wind_interp), "humidity": float(hum_interp)}
 
     except Exception as e:
         st.error(f"Erreur météo minute : {e}")
         return None
 
-# -------------------------
-# MÉTÉO HISTORIQUE - Open-Meteo (Références)
-# -------------------------
 
 @st.cache_data(show_spinner=False)
 def get_weather_openmeteo_day(lat, lon, date_obj):
     """
-    Récupère TOUTE la journée météo (24 valeurs horaires) en un seul appel.
-    Retourne :
-        - times : liste datetime
-        - temps : liste température
-        - winds : liste vent
-        - hums  : liste humidité
+    Récupère TOUTE la journée météo (24 valeurs horaires) en un seul appel (archive).
+    ✅ timezone=auto (au lieu de UTC) pour cohérence avec tes datetime locaux
+    Retourne : times, temps, winds, hums
     """
-    date_str = date_obj.strftime("%Y-%m-%d")
+    try:
+        date_str = date_obj.strftime("%Y-%m-%d")
 
-    url = (
-        "https://archive-api.open-meteo.com/v1/archive?"
-        f"latitude={lat}&longitude={lon}"
-        f"&start_date={date_str}&end_date={date_str}"
-        "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
-        "&timezone=UTC"
-    )
+        url = (
+            "https://archive-api.open-meteo.com/v1/archive?"
+            f"latitude={lat}&longitude={lon}"
+            f"&start_date={date_str}&end_date={date_str}"
+            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
+            "&timezone=auto"
+        )
 
-    r = requests.get(url)
-    data = r.json()
+        r = requests.get(url, timeout=15)
+        data = r.json()
 
-    if "hourly" not in data:
+        if "hourly" not in data or "time" not in data["hourly"]:
+            return None
+
+        times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
+        temps = data["hourly"]["temperature_2m"]
+        winds = data["hourly"]["wind_speed_10m"]
+        hums  = data["hourly"]["relativehumidity_2m"]
+
+        return times, temps, winds, hums
+
+    except Exception:
         return None
 
-    times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
-    temps = data["hourly"]["temperature_2m"]
-    winds = data["hourly"]["wind_speed_10m"]
-    hums  = data["hourly"]["relativehumidity_2m"]
-
-    return times, temps, winds, hums
 
 def get_avg_weather_for_period(lat, lon, start_dt, end_dt):
     """
-    Récupère une météo même si start/end sont courts ou en dehors exact des heures.
-    Étend automatiquement la fenêtre et choisit la valeur la plus proche.
+    Récupère une météo moyenne sur une période (références FIT/TCX).
+    Étend automatiquement la fenêtre si trop petite (< 5 min).
     """
     if start_dt is None or end_dt is None:
         return None, None, None
 
-    # 1) ELARGISSEMENT de la fenêtre si trop petite (< 5 minutes)
+    # Elargir fenêtre si trop courte
     if (end_dt - start_dt).total_seconds() < 300:
         start_dt -= timedelta(minutes=2)
         end_dt += timedelta(minutes=2)
@@ -150,19 +146,16 @@ def get_avg_weather_for_period(lat, lon, start_dt, end_dt):
 
     times, temps, winds, hums = meteo_day
 
-    # 2) Sélection stricte dans l'intervalle
-    selT = [T for t,T in zip(times, temps) if start_dt <= t <= end_dt]
-    selW = [W for t,W in zip(times, winds) if start_dt <= t <= end_dt]
-    selH = [H for t,H in zip(times, hums)  if start_dt <= t <= end_dt]
+    selT = [T for t, T in zip(times, temps) if start_dt <= t <= end_dt]
+    selW = [W for t, W in zip(times, winds) if start_dt <= t <= end_dt]
+    selH = [H for t, H in zip(times, hums)  if start_dt <= t <= end_dt]
 
-    # 3) Si rien trouvé, prendre la valeur la plus proche dans l’heure
     if not selT:
-        # prendre l'heure la plus proche de start_dt
         closest_index = min(range(len(times)), key=lambda i: abs(times[i] - start_dt))
         return float(temps[closest_index]), float(winds[closest_index]), float(hums[closest_index])
 
-    # 4) Sinon on retourne la moyenne strictes
     return float(np.mean(selT)), float(np.mean(selW)), float(np.mean(selH))
+
 
 # -------------------------
 # UTILITAIRES
@@ -189,23 +182,21 @@ def hms_to_seconds(hms: str) -> int:
         elif len(parts) == 2:
             a, b = parts
             if a >= 10:
-                # mm:ss
-                h, m, s = 0, a, b
+                h, m, s = 0, a, b  # mm:ss
             else:
-                # hh:mm
-                h, m, s = a, b, 0
+                h, m, s = a, b, 0  # hh:mm
         elif len(parts) == 1:
             h, m, s = 0, 0, parts[0]
         else:
             return 0
 
-        # garde-fous
         if m < 0 or s < 0 or m > 59 or s > 59 or h < 0:
             return 0
 
         return max(0, h * 3600 + m * 60 + s)
     except Exception:
         return 0
+
 
 def seconds_to_hms(seconds: float) -> str:
     try:
@@ -217,10 +208,9 @@ def seconds_to_hms(seconds: float) -> str:
     except Exception:
         return "0:00:00"
 
+
 def hms_to_timedelta(hms: str) -> timedelta:
-    """
-    Convertit une chaîne 'hh:mm:ss' (ou 'mm:ss' / 'ss') en timedelta.
-    """
+    """Convertit 'hh:mm:ss' (ou 'mm:ss' / 'ss') en timedelta."""
     if hms is None:
         return timedelta(seconds=0)
     try:
@@ -241,6 +231,7 @@ def hms_to_timedelta(hms: str) -> timedelta:
     except Exception:
         return timedelta(seconds=0)
 
+
 def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
     if seconds_per_km <= 0 or math.isnan(seconds_per_km) or math.isinf(seconds_per_km):
         return "0:00"
@@ -248,14 +239,16 @@ def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
     s = int(round(seconds_per_km % 60))
     return f"{m}:{s:02d}"
 
+
 def haversine_m(lat1, lon1, lat2, lon2):
     R = 6371000.0
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2.0)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2.0)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
 
 class SimplePoint:
     def __init__(self, lat, lon, elev=0.0, time=None):
@@ -269,14 +262,53 @@ class SimplePoint:
         vert = (self.elevation - other.elevation)
         return math.sqrt(horiz * horiz + vert * vert)
 
+
 # -------------------------
-# Modèle & facteurs
+# Helpers safe + D+/D- robuste
+# -------------------------
+def safe_float(val, default=0.0):
+    try:
+        if val is None:
+            return float(default)
+        if isinstance(val, str):
+            s = val.strip()
+            if s == "" or s.lower() in ("nan", "none"):
+                return float(default)
+            return float(s.replace(",", "."))
+        if isinstance(val, (float, int, np.number)):
+            if np.isnan(val) or np.isinf(val):
+                return float(default)
+            return float(val)
+        return float(val)
+    except Exception:
+        return float(default)
+
+
+def compute_dplus_dminus(elevs):
+    """
+    Calcul robuste D+ / D- (ignore None/NaN/non-num)
+    """
+    try:
+        arr = np.array([safe_float(e, np.nan) for e in elevs], dtype=float)
+        arr = arr[~np.isnan(arr)]
+        if arr.size < 2:
+            return 0.0, 0.0
+        diffs = np.diff(arr)
+        dup = float(np.sum(np.clip(diffs, a_min=0, a_max=None)))
+        ddn = float(-np.sum(np.clip(diffs, a_min=None, a_max=0)))
+        return dup, ddn
+    except Exception:
+        return 0.0, 0.0
+
+
+# -------------------------
+# Modèle température & pente
 # -------------------------
 def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
     """
-    Multiplicateur simple : >opt -> 1 + k_hot*(temp-opt)
-    <opt -> 1 + k_cold*(opt-temp)
-    On retourne >= 0.1 (sécurité).
+    Multiplicateur simple :
+      >opt -> 1 + k_hot*(temp-opt)
+      <opt -> 1 + k_cold*(opt-temp)
     """
     try:
         if temp is None:
@@ -290,7 +322,12 @@ def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
     except Exception:
         return 1.0
 
+
 def apply_elevation_gradient_route(t_flat, d_up, d_down, segment_length_m=1000.0, k_up=1.04, k_down=0.996):
+    """
+    Ajuste le temps sur un segment selon l'effet montée/descente.
+    IMPORTANT: on va fournir d_up/d_down "réels" (intérieurs au segment), pas seulement delta net.
+    """
     try:
         seg_len = float(segment_length_m) if segment_length_m and segment_length_m > 0 else 1000.0
         up_factor = (float(k_up) - 1.0) * (float(d_up) / seg_len)
@@ -300,61 +337,69 @@ def apply_elevation_gradient_route(t_flat, d_up, d_down, segment_length_m=1000.0
     except Exception:
         return float(t_flat)
 
-def fit_loglog_model(refs):
-    """
-    Fit log-log: secs = a * (distance_km ** K)
-    refs: list of dicts with 'distance' (m) and 'temps' (secs or h:mm:ss)
-    Retourne a, K
-    """
-    X = []
-    Y = []
-    for r in refs:
-        d_m = r.get("distance", None)
-        t_raw = r.get("temps")
-        if d_m is None or d_m <= 0:
-            continue
-        if isinstance(t_raw, (int, float, np.number)):
-            secs = float(t_raw)
-        else:
-            secs = hms_to_seconds(str(t_raw))
-        if secs <= 0:
-            continue
-        d_km = float(d_m) / 1000.0
-        X.append(math.log(max(1e-6, d_km)))
-        Y.append(math.log(max(1e-6, secs)))
-    if len(X) >= 2:
-        coeffs = np.polyfit(X, Y, 1)  # Y = K * X + log(a)
-        K = float(coeffs[0])
-        K = max(0.85, min(1.25, K))
-        loga = float(coeffs[1])
-        a = math.exp(loga)
-        if not (0 < a < 1e6):  # sanity
-            a = 240.0
-        if abs(K) > 5:
-            K = 1.0
-        return a, K
-    elif len(X) == 1:
-        d_km = math.exp(X[0])
-        secs = math.exp(Y[0])
-        a = secs / max(1e-6, d_km)
-        return a, 1.0
-    else:
-        return 240.0, 1.0
 
-def predict_time_flat(distance_m, a, K):
-    d_km = float(distance_m) / 1000.0
-    return float(a) * (d_km ** float(K))
+def segment_up_down_from_profile(d0, d1, dists, elevs):
+    """
+    ✅ NOUVEAU : calcule D+ et D- à l'intérieur du segment [d0, d1]
+    à partir du profil (dists/elevs) en sommant les micro-variations.
+    - dists : distances cumulées (m) (même axe que elevs)
+    - elevs : altitudes (m) correspondant à dists
+    """
+    try:
+        d0 = float(d0)
+        d1 = float(d1)
+        if d1 <= d0:
+            return 0.0, 0.0
 
-def override_with_objective(distance_m, objective_time_hms, K):
-    objective_seconds = hms_to_seconds(objective_time_hms)
-    d_km = float(distance_m) / 1000.0
-    if d_km <= 0:
-        return None
-    a = float(objective_seconds) / (d_km ** float(K))
-    return a
+        if dists is None or elevs is None or len(dists) < 2 or len(elevs) < 2:
+            return 0.0, 0.0
+
+        dists = np.asarray(dists, dtype=float)
+        elevs = np.asarray(elevs, dtype=float)
+
+        i0 = max(0, int(np.searchsorted(dists, d0) - 1))
+        i1 = min(len(dists) - 1, int(np.searchsorted(dists, d1) + 1))
+
+        sd = dists[i0:i1 + 1]
+        se = elevs[i0:i1 + 1]
+
+        if len(sd) < 2:
+            return 0.0, 0.0
+
+        e0 = float(np.interp(d0, sd, se))
+        e1 = float(np.interp(d1, sd, se))
+
+        mid_mask = (sd > d0) & (sd < d1)
+        sd_mid = sd[mid_mask]
+        se_mid = se[mid_mask]
+
+        sd2 = np.concatenate(([d0], sd_mid, [d1]))
+        se2 = np.concatenate(([e0], se_mid, [e1]))
+
+        diffs = np.diff(se2)
+        dup = float(np.sum(np.clip(diffs, a_min=0, a_max=None)))
+        ddn = float(-np.sum(np.clip(diffs, a_min=None, a_max=0)))
+        return dup, ddn
+    except Exception:
+        return 0.0, 0.0
+
+
+def clean_time_input(v):
+    if v is None:
+        return "0:00:00"
+    if isinstance(v, (int, float, np.number)):
+        return seconds_to_hms(float(v))
+    s = str(v).strip()
+    if s == "" or s.lower() in ("none", "nan"):
+        return "0:00:00"
+    return s
+
+# =========================
+# BLOC 2/4 — Parsers GPX / FIT / TCX + découpe temporelle + D+/D- robustes
+# =========================
 
 # -------------------------
-# Parsers GPX / FIT / TCX
+# Parsers GPX
 # -------------------------
 def parse_gpx_points(file):
     try:
@@ -370,13 +415,22 @@ def parse_gpx_points(file):
         st.error(f"Erreur parsing GPX : {e}")
         return None, []
 
+
 def gpx_to_df(points):
     return pd.DataFrame([
-        {"lat": p.latitude, "lon": p.longitude, "elev": p.elevation or 0, "time": getattr(p, "time", None)}
+        {
+            "lat": p.latitude,
+            "lon": p.longitude,
+            "elev": p.elevation or 0,
+            "time": getattr(p, "time", None)
+        }
         for p in points
     ])
 
-# ---------- MODIF : extraction d'un segment temporel FIT/TCX en timedelta ----------
+
+# -------------------------
+# Découpe temporelle FIT / TCX
+# -------------------------
 def extract_segment_from_points(points, start_td, end_td):
     """
     Extrait un segment temporel d'une séance FIT/TCX.
@@ -386,37 +440,33 @@ def extract_segment_from_points(points, start_td, end_td):
     if not points or len(points) < 2:
         return points
 
-    # Fonction générique pour récupérer le timestamp
     def get_time(p):
         if isinstance(p, dict):
             return p.get("time", None)
         return getattr(p, "time", None)
 
-    # Récupération de t0
     times = [get_time(p) for p in points if get_time(p) is not None]
     if len(times) < 2:
         return points
 
     t0 = min(times)
-
-    # Nouveaux intervalles (timedelta)
     start_dt = t0 + start_td
     end_dt = t0 + end_td
 
-    # 🔧 Correction : inclure la borne supérieure (évite les allures trop rapides)
+    # inclure la borne sup (évite segments trop courts)
     end_dt += timedelta(seconds=1)
 
-    # Filtrage segment
     seg = [
         p for p in points
         if (get_time(p) is not None and start_dt <= get_time(p) <= end_dt)
     ]
 
-    # Si trop court, on renvoie la séance complète
     return seg if len(seg) >= 2 else points
 
-# ----------------------------------------------------------------------
 
+# -------------------------
+# Parser FIT (robuste)
+# -------------------------
 def parse_fit(file):
     try:
         file.seek(0)
@@ -429,59 +479,66 @@ def parse_fit(file):
         start_global = None
         elapsed_global = None
 
-        # Extraction metadata
+        # Métadonnées session
         for msg in fit.get_messages("session"):
             vals = {d.name: d.value for d in msg}
             if isinstance(vals.get("start_time"), datetime):
                 start_global = vals["start_time"].replace(tzinfo=None)
-            if isinstance(vals.get("total_elapsed_time"), (int,float)):
+            if isinstance(vals.get("total_elapsed_time"), (int, float)):
                 elapsed_global = vals["total_elapsed_time"]
 
-        # Extraction record (lat/lon + timestamps)
+        # Records
         for msg in fit.get_messages("record"):
             vals = {d.name: d.value for d in msg}
             lat_raw = vals.get("position_lat")
             lon_raw = vals.get("position_long")
             ts = vals.get("timestamp")
 
-            if lat_raw and lon_raw:
-                lat = lat_raw * (180 / 2**31)
-                lon = lon_raw * (180 / 2**31)
+            if lat_raw is None or lon_raw is None:
+                continue
 
-                # Convert timestamp FIT
+            lat = lat_raw * (180 / 2**31)
+            lon = lon_raw * (180 / 2**31)
+
+            # Timestamp
+            if isinstance(ts, datetime):
+                dt_local = ts.replace(tzinfo=None)
+            elif isinstance(ts, (int, float)):
+                dt_local = datetime(1989, 12, 31) + timedelta(seconds=float(ts))
+            else:
                 dt_local = None
-                if isinstance(ts, datetime):
-                    dt_local = ts.replace(tzinfo=None)
-                elif isinstance(ts, (int,float)):
-                    dt_local = datetime(1989,12,31) + timedelta(seconds=float(ts))
 
-                records.append((lat, lon, vals.get("altitude",0), vals.get("distance",0)))
-                times_points.append(dt_local)
+            records.append((
+                lat,
+                lon,
+                safe_float(vals.get("altitude", 0.0)),
+                safe_float(vals.get("distance", 0.0))
+            ))
+            times_points.append(dt_local)
 
-        df = pd.DataFrame(records, columns=["lat","lon","elev","dist"])
+        if not records:
+            return None
 
-        # Détermination start/end
-        valid_times = [t for t in times_points if t]
+        df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
 
-        if len(valid_times)>=2:
+        valid_times = [t for t in times_points if t is not None]
+
+        if len(valid_times) >= 2:
             start_dt = min(valid_times)
             end_dt = max(valid_times)
-
         else:
-            start_dt = start_global
-            if start_global and elapsed_global:
-                end_dt = start_global + timedelta(seconds=elapsed_global)
-            elif start_global:
-                end_dt = start_global + timedelta(minutes=5)
+            start_dt = start_global or datetime.now()
+            if elapsed_global:
+                end_dt = start_dt + timedelta(seconds=float(elapsed_global))
             else:
-                # Fallback ultime : on invente une fenêtre sûre
-                start_dt = datetime.now().replace(hour=12,minute=0,second=0,microsecond=0) - timedelta(days=1)
                 end_dt = start_dt + timedelta(minutes=5)
 
-        # Météo robuste
-        avgT, avgW, avgH = get_avg_weather_for_period(records[0][0], records[0][1], start_dt, end_dt)
+        avgT, avgW, avgH = get_avg_weather_for_period(
+            records[0][0], records[0][1], start_dt, end_dt
+        )
 
-        # ---------- on renvoie aussi tous les points ----------
+        dup, ddn = compute_dplus_dminus(df["elev"].values)
+
         return {
             "points": [
                 {
@@ -494,8 +551,8 @@ def parse_fit(file):
                 for (r, t) in zip(records, times_points)
             ],
             "distance": float(df["dist"].max()),
-            "D_up": float(np.sum(np.diff(df.elev).clip(min=0))),
-            "D_down": float(-np.sum(np.diff(df.elev).clip(max=0))),
+            "D_up": float(dup),
+            "D_down": float(ddn),
             "duration_hms": seconds_to_hms((end_dt - start_dt).total_seconds()),
             "avg_temp": avgT,
             "avg_wind": avgW,
@@ -503,18 +560,22 @@ def parse_fit(file):
         }
 
     except Exception as e:
-        st.error(f"Erreur FIT robuste : {e}")
+        st.error(f"Erreur FIT : {e}")
         return None
 
+
+# -------------------------
+# Parser TCX (robuste)
+# -------------------------
 def parse_tcx(file):
     try:
         file.seek(0)
         tree = ET.parse(file)
         root = tree.getroot()
-    except:
+    except Exception:
         return None
 
-    ns = {"tcx":"http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
+    ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
     tps = root.findall(".//tcx:Trackpoint", ns)
 
     pts = []
@@ -535,108 +596,131 @@ def parse_tcx(file):
         elev = float(ele.text) if ele is not None else 0.0
 
         try:
-            t = datetime.fromisoformat(tim.text.replace("Z","+00:00")).replace(tzinfo=None)
-        except:
+            t = datetime.fromisoformat(tim.text.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
             t = None
 
-        pts.append(SimplePoint(lat,lon,elev,t))
+        pts.append(SimplePoint(lat, lon, elev, t))
         times.append(t)
         elevs.append(elev)
 
-    if len(pts)<2:
+    if len(pts) < 2:
         return None
 
     valid_times = [t for t in times if t]
 
-    if len(valid_times)>=2:
+    if len(valid_times) >= 2:
         start_dt = valid_times[0]
         end_dt = valid_times[-1]
-    elif len(valid_times)==1:
+    elif len(valid_times) == 1:
         start_dt = valid_times[0]
         end_dt = start_dt + timedelta(minutes=5)
     else:
-        start_dt = datetime.now().replace(hour=12,minute=0,second=0,microsecond=0) - timedelta(days=1)
+        start_dt = datetime.now()
         end_dt = start_dt + timedelta(minutes=5)
 
-    avgT, avgW, avgH = get_avg_weather_for_period(pts[0].latitude, pts[0].longitude, start_dt, end_dt)
+    avgT, avgW, avgH = get_avg_weather_for_period(
+        pts[0].latitude, pts[0].longitude, start_dt, end_dt
+    )
 
-    total = sum(pts[i].distance_3d(pts[i-1]) for i in range(1,len(pts)))
+    total = sum(
+        pts[i].distance_3d(pts[i - 1])
+        for i in range(1, len(pts))
+    )
+
     dup, ddn = compute_dplus_dminus(elevs)
- 
 
     return {
         "points": pts,
         "distance": round(total),
         "D_up": round(dup),
         "D_down": round(ddn),
-        "duration_hms": seconds_to_hms((end_dt-start_dt).total_seconds()),
+        "duration_hms": seconds_to_hms((end_dt - start_dt).total_seconds()),
         "avg_temp": avgT,
         "avg_wind": avgW,
         "avg_humidity": avgH
     }
 
-# -------------------------
-# Helpers safe
-# -------------------------
-def safe_float(val, default=0.0):
-    try:
-        if val is None:
-            return float(default)
-        if isinstance(val, str):
-            s = val.strip()
-            if s == "" or s.lower() in ("nan", "none"):
-                return float(default)
-            return float(s.replace(",", "."))
-        if isinstance(val, (float, int, np.number)):
-            if np.isnan(val) or np.isinf(val):
-                return float(default)
-            return float(val)
-        return float(val)
-    except Exception:
-        return float(default)
+# =========================
+# BLOC 3/4 — Modèle (fit log-log) + recalibrage + run_prediction_df (pente réelle + température appliquée)
+# =========================
 
-def compute_dplus_dminus(elevs):
+# -------------------------
+# Fit log-log
+# -------------------------
+def fit_loglog_model(refs):
     """
-    Calcul robuste D+ / D-
-    - ignore None / NaN / valeurs non numériques
-    - évite les crashs np.diff
+    Fit log-log: secs = a * (distance_km ** K)
+    refs: list of dicts with 'distance' (m) and 'temps' (secs ou h:mm:ss)
+    Retourne a, K
     """
-    try:
-        arr = np.array([safe_float(e, np.nan) for e in elevs], dtype=float)
-        arr = arr[~np.isnan(arr)]
-        if arr.size < 2:
-            return 0.0, 0.0
-        diffs = np.diff(arr)
-        dup = float(np.sum(np.clip(diffs, a_min=0, a_max=None)))
-        ddn = float(-np.sum(np.clip(diffs, a_min=None, a_max=0)))
-        return dup, ddn
-    except Exception:
-        return 0.0, 0.0
+    X, Y = [], []
+    for r in refs:
+        d_m = r.get("distance", None)
+        t_raw = r.get("temps", None)
 
-def clean_time_input(v):
-    if v is None:
-        return "0:00:00"
-    if isinstance(v, (int, float, np.number)):
-        return seconds_to_hms(float(v))
-    s = str(v).strip()
-    if s == "" or s.lower() in ("none", "nan"):
-        return "0:00:00"
-    return s
+        if d_m is None or d_m <= 0:
+            continue
+
+        if isinstance(t_raw, (int, float, np.number)):
+            secs = float(t_raw)
+        else:
+            secs = hms_to_seconds(str(t_raw))
+
+        if secs <= 0:
+            continue
+
+        d_km = float(d_m) / 1000.0
+        X.append(math.log(max(1e-6, d_km)))
+        Y.append(math.log(max(1e-6, secs)))
+
+    if len(X) >= 2:
+        coeffs = np.polyfit(X, Y, 1)
+        K = float(coeffs[0])
+        # ✅ garde-fous: évite extrapolations folles
+        K = max(0.85, min(1.25, K))
+
+        loga = float(coeffs[1])
+        a = math.exp(loga)
+        if not (0 < a < 1e6):
+            a = 240.0
+        return a, K
+
+    elif len(X) == 1:
+        d_km = math.exp(X[0])
+        secs = math.exp(Y[0])
+        a = secs / max(1e-6, d_km)
+        return a, 1.0
+
+    return 240.0, 1.0
+
+
+def predict_time_flat(distance_m, a, K):
+    d_km = float(distance_m) / 1000.0
+    return float(a) * (d_km ** float(K))
+
+
+def override_with_objective(distance_m, objective_time_hms, K):
+    objective_seconds = hms_to_seconds(objective_time_hms)
+    d_km = float(distance_m) / 1000.0
+    if d_km <= 0:
+        return None
+    return float(objective_seconds) / (d_km ** float(K))
+
 
 # -------------------------
-# Recalibration : applique correction élévation & température
+# Recalibrage références (plat + température)
 # -------------------------
 def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     """
-    Recalibre une référence dans des conditions idéales :
-    - plat (0 %)
-    - température optimale choisie par l’utilisateur (opt_temp)
+    Recalibre une référence vers conditions idéales:
+      - plat (retire effet D+/D-)
+      - température opt_temp
     """
-
-    # --- 1) Temps brut
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
+    if secs <= 0:
+        return 0.0
 
-    # --- 2) Retirer effet dénivelé
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
@@ -650,39 +734,31 @@ def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_tem
 
     secs_no_elev = secs / factor_elev
 
-    # --- 3) Retirer effet température réelle (si connue)
     temp_real = ref.get("avg_temp")
     if temp_real is not None:
         mult_real = temp_multiplier_nonlin(
-            temp_real,
-            opt_temp=opt_temp,
-            k_hot=k_temp_hot,
-            k_cold=k_temp_cold
+            temp_real, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold
         )
-        if mult_real != 0:
-            secs_no_temp = secs_no_elev / mult_real
-        else:
-            secs_no_temp = secs_no_elev
+        secs_no_temp = secs_no_elev / (mult_real if mult_real else 1.0)
     else:
         secs_no_temp = secs_no_elev
 
-    # --- 4) Appliquer l'effet température optimale définie par l’utilisateur
     mult_opt = temp_multiplier_nonlin(
-        opt_temp,
-        opt_temp=opt_temp,
-        k_hot=k_temp_hot,
-        k_cold=k_temp_cold
+        opt_temp, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold
     )
     secs_ideal = secs_no_temp * mult_opt
+    return max(0.0, float(secs_ideal))
 
-    return max(0.0, secs_ideal)
 
 def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None):
     """
-    Recalibre la référence en retirant l'effet élévation, et éventuellement
-    l'effet température si assumed_temp est connu.
+    Recalibre la référence en retirant l'effet élévation.
+    (optionnel) retire aussi l'effet température si assumed_temp fourni.
     """
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
+    if secs <= 0:
+        return 0.0
+
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
@@ -695,31 +771,31 @@ def recalibrate_ref_using_current(ref, k_up, k_down, k_temp_hot, k_temp_cold, op
         factor_elev = 1.0
 
     secs_no_elev = secs / factor_elev
-    if assumed_temp is None:
-        return max(0.0, secs_no_elev)
-    else:
-        mult_temp = temp_multiplier_nonlin(
-            assumed_temp,
-            opt_temp=opt_temp,
-            k_hot=k_temp_hot,
-            k_cold=k_temp_cold
-        )
-        if mult_temp == 0:
-            mult_temp = 1.0
-        return max(0.0, secs_no_elev / mult_temp)
 
-# -------------------------
-# Prépare les références AVANT fit
-# -------------------------
+    if assumed_temp is None:
+        return max(0.0, float(secs_no_elev))
+
+    mult_temp = temp_multiplier_nonlin(
+        assumed_temp, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold
+    )
+    if mult_temp == 0:
+        mult_temp = 1.0
+    return max(0.0, float(secs_no_elev / mult_temp))
+
+
 def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, ideal_refs=False):
     """
-    refs_input: liste dicts {distance, temps, D_up, D_down, duration_hms_file...}
-    Si ideal_refs True => on normalise vers 0% (retrait élévation, et correction temp via opt_temp).
-    Sinon => retrait élévation, on garde l'effet température implicite.
+    Prépare refs pour le fit:
+      - récupère temps effectif (durée fichier si dispo)
+      - convertit en secondes
+      - option ideal_refs : normalise vers conditions idéales
     """
     prepared = []
     for r in refs_input:
         d = safe_float(r.get("distance", 0.0))
+        if d <= 0:
+            continue
+
         file_dur = r.get("duration_hms_file")
         raw_t = file_dur if file_dur else r.get("temps", "0:00:00")
 
@@ -733,28 +809,23 @@ def prepare_refs_for_fit(refs_input, k_up, k_down, k_temp_hot, k_temp_cold, opt_
 
         if ideal_refs:
             secs_recal = recalibrate_ref_to_ideal(
-                ref_for_calib,
-                k_up, k_down,
-                k_temp_hot, k_temp_cold,
-                opt_temp
+                ref_for_calib, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp
             )
         else:
             secs_recal = recalibrate_ref_using_current(
-                ref_for_calib,
-                k_up, k_down,
-                k_temp_hot, k_temp_cold,
-                opt_temp,
-                assumed_temp=None
+                ref_for_calib, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp, assumed_temp=None
             )
 
-        prepared.append({
-            "distance": float(d),
-            "temps": float(secs_recal)
-        })
+        if secs_recal <= 0:
+            continue
+
+        prepared.append({"distance": float(d), "temps": float(secs_recal)})
+
     return prepared
 
+
 # -------------------------
-# Calcul principal de prédiction (avec météo segmentaire)
+# run_prediction_df (✅ pente réelle + température)
 # -------------------------
 def run_prediction_df(
     distance_cible_km,
@@ -774,113 +845,107 @@ def run_prediction_df(
     if not points or len(points) < 2:
         raise ValueError("GPX invalide ou trop court.")
 
-    # Distances cumulées
+    # Distances cumulées (3D) + profil altitude sur le même axe
     total_m = 0.0
     cum = [0.0]
+    elevs = [safe_float(getattr(points[0], "elevation", 0.0), 0.0)]
+
     for i in range(1, len(points)):
+        p_prev = points[i - 1]
+        p_cur = points[i]
+
         d = SimplePoint(
-            points[i-1].latitude,
-            points[i-1].longitude,
-            getattr(points[i-1], "elevation", 0)
+            p_prev.latitude, p_prev.longitude, safe_float(getattr(p_prev, "elevation", 0.0), 0.0)
         ).distance_3d(
             SimplePoint(
-                points[i].latitude,
-                points[i].longitude,
-                getattr(points[i], "elevation", 0)
+                p_cur.latitude, p_cur.longitude, safe_float(getattr(p_cur, "elevation", 0.0), 0.0)
             )
         )
-        total_m += d
-        cum.append(total_m)
-    distance_gpx_km = total_m / 1000.0
 
+        total_m += float(d)
+        cum.append(total_m)
+        elevs.append(safe_float(getattr(p_cur, "elevation", 0.0), 0.0))
+
+    dists_raw = np.asarray(cum, dtype=float)
+    elev_raw = np.asarray(elevs, dtype=float)
+
+    distance_gpx_km = total_m / 1000.0
     if distance_cible_km is None or distance_cible_km <= 0:
         distance_cible_km = distance_gpx_km
 
+    # Correction distance si on force une distance cible
     facteur_dist = distance_cible_km / max(distance_gpx_km, 1e-9)
     total_corr = total_m * facteur_dist
-    dists_corr = np.asarray([d * facteur_dist for d in cum])
+    dists_corr = dists_raw * facteur_dist  # axe "course cible"
 
-    # Élèvations resamplées
-    elev_list = np.asarray([getattr(p, "elevation", 0) or 0 for p in points])
-    if len(dists_corr) != len(elev_list):
-        xs = np.linspace(0, total_m, len(elev_list))
-        new_x = np.linspace(0, total_m, len(dists_corr))
-        elev_list = np.interp(new_x, xs, elev_list)
-
-    # Références préparées pour le fit
+    # Références préparées pour fit
     refs_for_fit = prepare_refs_for_fit(
         refs_input,
-        k_up=k_up,
-        k_down=k_down,
-        k_temp_hot=k_temp_hot,
-        k_temp_cold=k_temp_cold,
+        k_up=k_up, k_down=k_down,
+        k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold,
         opt_temp=opt_temp,
-        ideal_refs=ideal_refs,
+        ideal_refs=ideal_refs
     )
+    if len(refs_for_fit) < 1:
+        raise ValueError("Pas assez de références valides (distance/temps).")
 
     # Fit log-log
     a, K = fit_loglog_model(refs_for_fit)
 
-    # Override temps objectif éventuel
+    # Override temps objectif
     a_override = None
     if objective_time_hms:
-        a_override = override_with_objective(
-            int(distance_cible_km * 1000),
-            objective_time_hms,
-            K
-        )
-    baseline_seconds_per_km = (a_override if a_override is not None else a)
+        a_override = override_with_objective(int(distance_cible_km * 1000), objective_time_hms, K)
 
+    baseline_a = a_override if a_override is not None else a
+
+    # Temps plat théorique total
     distance_cible_m = int(distance_cible_km * 1000)
-    base_flat_total = predict_time_flat(distance_cible_m, baseline_seconds_per_km, K)
-    base_s_per_km_flat = (
-        base_flat_total / distance_cible_km if distance_cible_km > 0 else base_flat_total
-    )
+    base_flat_total = predict_time_flat(distance_cible_m, baseline_a, K)
+    base_s_per_km_flat = base_flat_total / max(distance_cible_km, 1e-9)
 
-    # Marqueurs km
+    # Marqueurs km (jusqu'à total_corr)
     km_marks = [i * 1000 for i in range(1, int(total_corr // 1000) + 1)]
     last_seg = total_corr - (int(total_corr // 1000) * 1000)
     if last_seg > 1e-6:
         km_marks.append(total_corr)
 
-    # Dataframe GPX pour interp lat/lon
-    df_points = pd.DataFrame([
-        {
-            "lat": p.latitude,
-            "lon": p.longitude,
-            "elev": getattr(p, "elevation", 0),
-            "time": getattr(p, "time", None)
-        }
-        for p in points
-    ])
+    # DF points pour interp lat/lon
+    df_points = pd.DataFrame([{"lat": p.latitude, "lon": p.longitude} for p in points])
+    lat_arr = df_points["lat"].values
+    lon_arr = df_points["lon"].values
 
     segment_infos = []
     cum_time_temp = 0.0
     dt_depart = datetime.combine(date_course_local, heure_course_local)
 
-    for i, d in enumerate(km_marks):
-        # Élèvation segment
-        e_cur = float(np.interp(d, dists_corr, elev_list))
-        e_prev = float(np.interp(max(d - 1000.0, 0.0), dists_corr, elev_list)) if i > 0 else e_cur
-        d_up = max(0.0, e_cur - e_prev)
-        d_down = max(0.0, e_prev - e_cur)
+    for i, d1 in enumerate(km_marks):
+        d0 = 0.0 if i == 0 else km_marks[i - 1]
+        seg_length_m = float(d1 - d0) if d1 > d0 else 1000.0
 
-        # Longueur du segment
-        seg_length_m = (
-            1000.0
-            if (i < len(km_marks) - 1 or last_seg < 1e-6)
-            else (d - km_marks[-2] if len(km_marks) >= 2 else d)
+        # ✅ pente réelle: calcule D+/D- dans le segment via profil (somme micro-variations)
+        dup_seg, ddn_seg = segment_up_down_from_profile(
+            d0, d1, dists_corr, elev_raw
         )
 
-        # Temps plat théorique
+        # ✅ grade moyen (%) du segment (utile à afficher)
+        grade_pct = 0.0
+        try:
+            e0 = float(np.interp(d0, dists_corr, elev_raw))
+            e1 = float(np.interp(d1, dists_corr, elev_raw))
+            grade_pct = 100.0 * (e1 - e0) / max(seg_length_m, 1e-9)
+        except Exception:
+            grade_pct = 0.0
+
+        # Temps plat segment
         t_km_flat = base_s_per_km_flat * (seg_length_m / 1000.0)
 
-        # Effet dénivelé
+        # Effet pente (via D+/D- internes au segment)
         if apply_elev:
             t_after_elev = apply_elevation_gradient_route(
                 t_km_flat,
-                d_up,
-                d_down,
+                dup_seg,
+                ddn_seg,
                 segment_length_m=seg_length_m,
                 k_up=k_up,
                 k_down=k_down
@@ -890,33 +955,27 @@ def run_prediction_df(
 
         # Effet fatigue linéaire
         if apply_fatigue and fatigue_rate > 0 and total_corr > 0:
-            progression = d / total_corr
+            progression = d1 / total_corr
             t_after_fatigue = t_after_elev * (1.0 + (fatigue_rate / 100.0) * progression)
         else:
             t_after_fatigue = t_after_elev
 
-        # Datetime du passage au milieu du segment
-        passage_dt = dt_depart + timedelta(
-            seconds=cum_time_temp + t_after_fatigue / 2.0
-        )
+        # Datetime passage milieu segment
+        passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_after_fatigue / 2.0)
 
-        # Lat/lon du segment
-        lat_seg = np.interp(d, dists_corr, df_points["lat"].values)
-        lon_seg = np.interp(d, dists_corr, df_points["lon"].values)
-        
+        # lat/lon au bout du segment (d1)
+        lat_seg = float(np.interp(d1, dists_corr, lat_arr))
+        lon_seg = float(np.interp(d1, dists_corr, lon_arr))
+
+        # météo au moment du passage
         meteo = get_weather_openmeteo_minutely(lat_seg, lon_seg, passage_dt)
         temp_here = meteo["temp"] if meteo else None
         wind_here = meteo["wind"] if meteo else None
-        hum_here = meteo["humidity"] if meteo else None
+        hum_here  = meteo["humidity"] if meteo else None
 
         # Effet température
         if apply_temp and temp_here is not None:
-            temp_mult = temp_multiplier_nonlin(
-                temp_here,
-                opt_temp=opt_temp,
-                k_hot=k_temp_hot,
-                k_cold=k_temp_cold
-            )
+            temp_mult = temp_multiplier_nonlin(temp_here, opt_temp=opt_temp, k_hot=k_temp_hot, k_cold=k_temp_cold)
             t_after_temp = t_after_fatigue * temp_mult
         else:
             temp_mult = 1.0
@@ -924,19 +983,22 @@ def run_prediction_df(
 
         segment_infos.append({
             "idx": i,
-            "d": d,
+            "d0": d0,
+            "d1": d1,
             "seg_length_m": seg_length_m,
-            "d_up": d_up,
-            "d_down": d_down,
+            "dup_seg": float(dup_seg),
+            "ddn_seg": float(ddn_seg),
+            "grade_pct": float(grade_pct),
             "temp": temp_here,
             "wind": wind_here,
             "humidity": hum_here,
-            "temp_mult": temp_mult,
-            "t_raw": t_after_temp
+            "temp_mult": float(temp_mult),
+            "t_raw": float(t_after_temp),
         })
-        cum_time_temp += t_after_temp
 
-    # Ajustement global si objectif temps
+        cum_time_temp += float(t_after_temp)
+
+    # Ajustement global si temps objectif forcé
     if objective_time_hms:
         objective_seconds = hms_to_seconds(objective_time_hms)
         sum_raw = sum(s["t_raw"] for s in segment_infos)
@@ -947,23 +1009,23 @@ def run_prediction_df(
     # Construction DF résultats
     results = []
     cum_time = 0.0
+
     for seg in segment_infos:
         t_seg = seg["t_raw"] * scale
         cum_time += t_seg
-        pace_per_km = (
-            (t_seg / seg["seg_length_m"]) * 1000.0
-            if seg["seg_length_m"] > 0
-            else t_seg
-        )
+
+        pace_per_km = (t_seg / seg["seg_length_m"]) * 1000.0 if seg["seg_length_m"] > 0 else t_seg
+
+        km_label = seg["idx"] + 1
+        if seg["seg_length_m"] < 999.0:
+            km_label = f"{seg['idx']+1} ({seg['seg_length_m']:.0f}m)"
 
         results.append({
-            "Km": (
-                seg["idx"] + 1
-                if seg["seg_length_m"] >= 1000 - 1e-6
-                else f"{seg['idx']+1} ({seg['seg_length_m']:.0f}m)"
-            ),
-            "D+ (m)": round(seg["d_up"], 1),
-            "D- (m)": round(seg["d_down"], 1),
+            "Km": km_label,
+            "Longueur (m)": round(seg["seg_length_m"], 0),
+            "Grade (%)": round(seg["grade_pct"], 2),
+            "D+ seg (m)": round(seg["dup_seg"], 1),
+            "D- seg (m)": round(seg["ddn_seg"], 1),
             "Temp (°C)": round(seg["temp"], 1) if seg["temp"] is not None else None,
             "Vent (m/s)": round(seg["wind"], 1) if seg["wind"] is not None else None,
             "Humidité (%)": round(seg["humidity"], 1) if seg["humidity"] is not None else None,
@@ -978,24 +1040,29 @@ def run_prediction_df(
 
     return {
         "df": df,
-        "total_seconds": total_seconds,
+        "total_seconds": float(total_seconds),
         "total_human": seconds_to_hms(total_seconds),
-        "distance_gpx_km": distance_gpx_km,
-        "method_used": "3d_haversine",
-        "base_flat_total": base_flat_total,
-        "a": baseline_seconds_per_km,
-        "K": K
+        "distance_gpx_km": float(distance_gpx_km),
+        "method_used": "3d_haversine + grade",
+        "base_flat_total": float(base_flat_total),
+        "a": float(baseline_a),
+        "K": float(K),
     }
 
+# =========================
+# BLOC 4/4 — UI Streamlit (entrées, calculs, affichage résultats, carte & profil)
+# =========================
+
 # -------------------------
-# UI : Entrées & Références
+# UI : Parcours GPX
 # -------------------------
 st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
 points = None
+
 if gpx_file:
     gpx, points = parse_gpx_points(gpx_file)
-    if points:
+    if points and len(points) >= 2:
         total_m_tmp = sum(
             SimplePoint(
                 points[i-1].latitude,
@@ -1011,83 +1078,61 @@ if gpx_file:
             for i in range(1, len(points))
         )
         st.session_state["gpx_original_distance_km"] = total_m_tmp / 1000.0
+        st.success(f"GPX chargé — distance ≈ {st.session_state['gpx_original_distance_km']:.2f} km")
     else:
-        st.session_state["gpx_original_distance_km"] = None
+        st.error("GPX invalide ou trop court.")
 
+
+# -------------------------
+# UI : Références
+# -------------------------
 st.header("2️⃣ Courses de référence (manuel ou FIT/TCX)")
+
 if "n_refs" not in st.session_state:
     st.session_state.n_refs = 3
 
-cols = st.columns([1, 1])
-with cols[0]:
+colA, colB = st.columns(2)
+with colA:
     if st.button("➕ Ajouter (max 6)") and st.session_state.n_refs < 6:
         st.session_state.n_refs += 1
-with cols[1]:
+with colB:
     if st.button("➖ Retirer") and st.session_state.n_refs > 1:
         st.session_state.n_refs -= 1
 
-# Collect raw refs (no recalculation here)
 refs_raw = []
 
 for i in range(1, st.session_state.n_refs + 1):
-
     st.markdown(f"#### Référence {i}")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
 
-    # --- Checkbox : fichier FIT/TCX ou manuel ---
     with c1:
-        use_file = st.checkbox(f"Importer fichier (FIT/TCX) ?", key=f"use_file_{i}")
+        use_file = st.checkbox("Importer FIT/TCX", key=f"use_file_{i}")
 
-    # valeurs par défaut
-    default_dist = st.session_state.get(f"dist_{i}", 5000 * i)
-    default_temps = st.session_state.get(f"temps_{i}", "0:40:00")
-    default_dup = st.session_state.get(f"dup_{i}", 0.0)
-    default_ddn = st.session_state.get(f"ddn_{i}", 0.0)
-
-st.subheader("🧪 Contrôle : allure implicite des références")
-for idx, r in enumerate(refs_raw, start=1):
-    secs = hms_to_seconds(r["temps"])
-    dist_km = float(r["distance"]) / 1000.0 if r["distance"] else 0.0
-    if secs > 0 and dist_km > 0:
-        pace = secs / dist_km
-        st.write(f"Réf {idx} — {r['distance']:.0f} m en {r['temps']} → {pace_seconds_to_str_per_km(pace)}/km")
-        if pace < 150:  # < 2:30/km
-            st.warning(f"⚠️ Réf {idx}: allure extrêmement rapide → vérifie le format du temps (ex: 1:40 = 1h40 ou 1min40).")
-
-    # --- Entrées manuelles ---
     with c2:
-        dist = st.number_input(f"Dist {i} (m)", value=float(default_dist), key=f"dist_{i}")
-    with c3:
-        temps = st.text_input(f"Temps {i} (h:mm:ss)", value=str(default_temps), key=f"temps_{i}")
-    with c4:
-        dup = st.number_input(f"D+ {i}", value=float(default_dup), key=f"dup_{i}")
-    with c5:
-        ddn = st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")  # petite sécurité au cas où
+        dist = st.number_input(f"Distance {i} (m)", value=float(5000 * i), key=f"dist_{i}")
 
-    # --- Import FIT/TCX (dans la boucle) ---
+    with c3:
+        temps = st.text_input(f"Temps {i} (h:mm:ss)", value="0:40:00", key=f"temps_{i}")
+
+    with c4:
+        dup = st.number_input(f"D+ {i} (m)", value=0.0, key=f"dup_{i}")
+
+    with c5:
+        ddn = st.number_input(f"D- {i} (m)", value=0.0, key=f"ddn_{i}")
+
     with c6:
         file_in = st.file_uploader(
-            f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}"
+            f"Fichier réf {i}", type=["fit", "tcx"], key=f"fileref_{i}"
         ) if use_file else None
 
-    # ---------- NOUVELLE SÉLECTION INTERVALLE HH:MM:SS SUR UNE LIGNE ----------
-    col_s, col_e = st.columns(2)
-    start_hms = col_s.text_input(f"Début réf {i} (hh:mm:ss)", value="00:00:00", key=f"start_{i}")
-    end_hms = col_e.text_input(f"Fin réf {i} (hh:mm:ss)", value="23:59:59", key=f"end_{i}")
-
-    start_td = hms_to_timedelta(start_hms)
-    end_td = hms_to_timedelta(end_hms)
-    # --------------------------------------------------------------------------
-
-    duration_hms_file = None
     avg_temp_ref = None
     avg_wind_ref = None
     avg_hum_ref = None
-    fit_data = None
-    tcx_data = None
-    filename = file_in.name.lower() if file_in else ""
+    duration_hms_file = None
 
     if file_in:
+        filename = file_in.name.lower()
+
         if filename.endswith(".fit"):
             fit_data = parse_fit(file_in)
             if fit_data:
@@ -1095,10 +1140,9 @@ for idx, r in enumerate(refs_raw, start=1):
                 dup = fit_data["D_up"]
                 ddn = fit_data["D_down"]
                 duration_hms_file = fit_data["duration_hms"]
-
                 avg_temp_ref = fit_data["avg_temp"]
                 avg_wind_ref = fit_data["avg_wind"]
-                avg_hum_ref  = fit_data["avg_humidity"]
+                avg_hum_ref = fit_data["avg_humidity"]
 
         elif filename.endswith(".tcx"):
             tcx_data = parse_tcx(file_in)
@@ -1107,71 +1151,12 @@ for idx, r in enumerate(refs_raw, start=1):
                 dup = tcx_data["D_up"]
                 ddn = tcx_data["D_down"]
                 duration_hms_file = tcx_data["duration_hms"]
-
                 avg_temp_ref = tcx_data["avg_temp"]
                 avg_wind_ref = tcx_data["avg_wind"]
-                avg_hum_ref  = tcx_data["avg_humidity"]
+                avg_hum_ref = tcx_data["avg_humidity"]
 
-        # ---------- DÉCOUPE DE LA SÉANCE SUR L'INTERVALLE CHOISI ----------
-        # On considère qu'on découpe si on n'est pas exactement 0 -> 23:59:59
-        if (start_td.total_seconds() > 0 or end_td.total_seconds() < 86399):
-            pts = None
-            if filename.endswith(".fit") and fit_data and "points" in fit_data:
-                pts = fit_data["points"]
-            elif filename.endswith(".tcx") and tcx_data and "points" in tcx_data:
-                pts = tcx_data["points"]
-
-            if pts:
-                seg = extract_segment_from_points(pts, start_td, end_td)
-
-                dist_seg = 0.0
-                elevs_seg = []
-                times_seg = []
-
-                for j in range(1, len(seg)):
-                    p1 = seg[j-1]
-                    p2 = seg[j]
-
-                    if isinstance(p1, dict):
-                        lat1 = p1["lat"]
-                        lon1 = p1["lon"]
-                        elev1 = p1["elev"]
-                        t1 = p1["time"]
-                    else:
-                        lat1 = p1.latitude
-                        lon1 = p1.longitude
-                        elev1 = p1.elevation
-                        t1 = p1.time
-
-                    if isinstance(p2, dict):
-                        lat2 = p2["lat"]
-                        lon2 = p2["lon"]
-                        elev2 = p2["elev"]
-                        t2 = p2["time"]
-                    else:
-                        lat2 = p2.latitude
-                        lon2 = p2.longitude
-                        elev2 = p2.elevation
-                        t2 = p2.time
-
-                    dist_seg += haversine_m(lat1, lon1, lat2, lon2)
-                    elevs_seg.append(elev2)
-                    if t2:
-                        times_seg.append(t2)
-
-                dup, ddn = compute_dplus_dminus(elevs_seg)
-
-
-                if len(times_seg) >= 2:
-                    duration_hms_file = seconds_to_hms((times_seg[-1] - times_seg[0]).total_seconds())
-
-                dist = round(dist_seg)
-        # -------------------------------------------------------------------------
-
-    # temps utilisé
     temps_effectif = duration_hms_file if duration_hms_file else temps
 
-    # --- Ajout à refs_raw (IMPORTANT : dans la boucle) ---
     refs_raw.append({
         "distance": float(dist),
         "temps": str(temps_effectif),
@@ -1181,137 +1166,52 @@ for idx, r in enumerate(refs_raw, start=1):
         "avg_temp": avg_temp_ref,
         "avg_wind": avg_wind_ref,
         "avg_humidity": avg_hum_ref,
-        # nouveaux champs intervalle
-        "start_td": start_td,
-        "end_td": end_td,
-        "start_hms": start_hms,
-        "end_hms": end_hms,
     })
 
-# Récap brut
-st.subheader("⏱️ Récap références (raw)")
-for idx, r in enumerate(refs_raw, start=1):
-    st.write(
-        f"Réf {idx} — Dist: {r['distance']:.0f} m | Brut: {r['temps']} | "
-        f"D+ {r['D_up']:.0f} m / D- {r['D_down']:.0f} m | "
-        f"Dur file: {r.get('duration_hms_file')} | "
-        f"Temp moy: {r.get('avg_temp')}°C | "
-        f"Intervalle: {r.get('start_hms','0:00:00')} → {r.get('end_hms','fin')}"
-    )
 
 # -------------------------
-# Paramètres modèle UI
+# Paramètres modèle
 # -------------------------
-st.header("3️⃣ Paramètres modèle")
+st.header("3️⃣ Paramètres du modèle")
+
 c1, c2 = st.columns(2)
 with c1:
-    use_elev_coeff = st.checkbox("Activer coefficients montée/descente 🎢", value=True)
-    if use_elev_coeff:
-        k_up = st.number_input("Coefficient montée (k_up)", value=1.040, format="%.3f", step=0.001)
-        k_down = st.number_input("Coefficient descente (k_down)", value=0.996, format="%.3f", step=0.001)
-    else:
-        k_up = 1.0
-        k_down = 1.0
+    use_elev_coeff = st.checkbox("Activer effet pente 🎢", value=True)
+    k_up = st.number_input("k montée", value=1.040, format="%.3f")
+    k_down = st.number_input("k descente", value=0.996, format="%.3f")
+
 with c2:
-    use_temp_coeff = st.checkbox("Activer coefficients température 🌡️", value=True)
-    if use_temp_coeff:
-        k_temp_hot = st.number_input(
-            "Sensibilité chaude (k_temp_hot)",
-            value=0.002,
-            format="%.4f",
-            step=0.0005
-        )
-        k_temp_cold = st.number_input(
-            "Sensibilité froide (k_temp_cold)",
-            value=0.002,
-            format="%.4f",
-            step=0.0005
-        )
-        opt_temp = st.number_input(
-            "Température optimale (°C)",
-            value=12.0,
-            format="%.1f",
-            step=0.5
-        )
-    else:
-        k_temp_hot = 0.0
-        k_temp_cold = 0.0
-        opt_temp = 12.0
+    use_temp_coeff = st.checkbox("Activer effet température 🌡️", value=True)
+    k_temp_hot = st.number_input("k chaud", value=0.002, format="%.4f")
+    k_temp_cold = st.number_input("k froid", value=0.002, format="%.4f")
+    opt_temp = st.number_input("Température optimale (°C)", value=12.0, format="%.1f")
 
 col1, col2 = st.columns(2)
 with col1:
-    date_course = st.date_input("Date de la course (Jour J)", value=date.today())
+    date_course = st.date_input("Date de la course", value=date.today())
 with col2:
-    heure_course = st.time_input("Heure de départ (Jour J)", value=time(9, 0))
+    heure_course = st.time_input("Heure de départ", value=time(9, 0))
 
-st.info("La prédiction utilise OpenWeather pour chaque segment de course (température, vent, humidité).")
+fatigue_active = st.checkbox("Activer fatigue linéaire")
+fatigue_rate = st.slider("Fatigue (%)", 0.0, 30.0, 5.0, 0.5) if fatigue_active else 0.0
 
-# -------------------------
-# Recalibrage des références (brut / idéal)
-# -------------------------
-st.subheader("⏱️ Références recalibrées (plat 0% & T° optimale)")
-
-refs_calibrated = []
-for r in refs_raw:
-    t_brut = hms_to_seconds(r["temps"])
-
-    t_ideal = recalibrate_ref_to_ideal(
-        ref=r,
-        k_up=k_up,
-        k_down=k_down,
-        k_temp_hot=k_temp_hot,
-        k_temp_cold=k_temp_cold,
-        opt_temp=opt_temp
-    )
-
-    refs_calibrated.append({
-        "distance": r["distance"],
-        "D_up": r["D_up"],
-        "D_down": r["D_down"],
-        "temps_brut": t_brut,
-        "temps_ideal": t_ideal,
-        "origine": r.get("duration_hms_file", None),
-        "temp_moy": r.get("avg_temp"),
-        "vent_moy": r.get("avg_wind"),
-        "hum_moy": r.get("avg_humidity"),
-    })
-
-df_refs = pd.DataFrame([{
-    "Distance (m)": r["distance"],
-    "D+ (m)": r["D_up"],
-    "D- (m)": r["D_down"],
-    "Temps brut": seconds_to_hms(r["temps_brut"]),
-    "Temps conditions idéales": seconds_to_hms(r["temps_ideal"]),
-    "Temp moy (°C)": r["temp_moy"],
-    "Vent moy (m/s)": r["vent_moy"],
-    "Hum moy (%)": r["hum_moy"],
-} for r in refs_calibrated])
-st.dataframe(df_refs, use_container_width=True)
-
-# FATIGUE
-st.header("3️⃣ bis. Fatigue linéaire")
-fatigue_active = st.checkbox("Activer fatigue ?", value=False)
-fatigue_rate = 0.0
-if fatigue_active:
-    fatigue_rate = st.slider("Régression finale (%)", 0.0, 30.0, 5.0, 0.5)
-
-# Option : utiliser CONDITIONS IDÉALES pour le fit
-st.markdown("---")
 ideal_refs = st.checkbox(
-    "🔧 Utiliser les références recalibrées en CONDITIONS IDÉALES pour le fit (plat 0% & T° opt.) ?",
+    "Utiliser références recalibrées (plat + T° idéale) pour le fit",
     value=True
 )
 
+
 # -------------------------
-# Calculs : Base & Forcé
+# Calcul
 # -------------------------
-st.header("4️⃣ Calcul & Comparaison")
-if st.button("▶️ Calculer prédiction (BASE, d'après références)"):
-    if not gpx_file or points is None:
-        st.error("Importe un fichier GPX d'abord.")
+st.header("4️⃣ Calcul de la prédiction")
+
+if st.button("▶️ Calculer la prédiction"):
+    if not gpx_file or not points:
+        st.error("Importe un GPX valide.")
     else:
         try:
-            res_base = run_prediction_df(
+            res = run_prediction_df(
                 distance_cible_km=None,
                 refs_input=refs_raw,
                 points=points,
@@ -1327,165 +1227,86 @@ if st.button("▶️ Calculer prédiction (BASE, d'après références)"):
                 k_temp_hot=k_temp_hot,
                 k_temp_cold=k_temp_cold,
                 opt_temp=opt_temp,
-                fatigue_rate=fatigue_rate
+                fatigue_rate=fatigue_rate,
             )
-            st.session_state["res_base"] = res_base
-            st.success(
-                f"Base calculée — distance GPX détectée: {res_base['distance_gpx_km']:.3f} km"
-            )
+            st.session_state["result"] = res
+            st.success("Prédiction calculée.")
         except Exception as e:
-            st.error(f"Erreur lors du calcul base : {e}")
+            st.error(f"Erreur calcul : {e}")
 
-st.markdown("---")
-st.markdown("**Forcer distance et/ou temps objectif (produit un tableau 'FORCÉ' distinct)**")
-colf1, colf2 = st.columns(2)
-with colf1:
-    force_distance_checkbox = st.checkbox("Forcer la distance pour la prédiction finale ?", value=False)
-    if "dist_forced" not in st.session_state:
-        st.session_state["dist_forced"] = 5.17
-    distance_forced_km = st.number_input(
-        "Distance forcée (km)",
-        value=st.session_state["dist_forced"],
-        format="%.2f",
-        key="dist_forced"
-    ) if force_distance_checkbox else None
-
-with colf2:
-    force_time_checkbox = st.checkbox("Forcer un temps objectif ?", value=False)
-    if "time_forced" not in st.session_state:
-        st.session_state["time_forced"] = "0:18:30"
-    time_forced_hms = st.text_input(
-        "Temps objectif (h:mm:ss)",
-        value=st.session_state["time_forced"],
-        key="time_forced"
-    ) if force_time_checkbox else None
-
-if st.button("📊 Calculer prédiction finale (FORCÉ si activé)"):
-    if not gpx_file or points is None:
-        st.error("Importe un fichier GPX d'abord.")
-    else:
-        dist_target = distance_forced_km if (force_distance_checkbox and distance_forced_km) else None
-        try:
-            res_forced = run_prediction_df(
-                distance_cible_km=dist_target,
-                refs_input=refs_raw,
-                points=points,
-                date_course_local=date_course,
-                heure_course_local=heure_course,
-                ideal_refs=ideal_refs,
-                apply_elev=use_elev_coeff,
-                apply_temp=use_temp_coeff,
-                apply_fatigue=fatigue_active,
-                objective_time_hms=time_forced_hms if force_time_checkbox else None,
-                k_up=k_up,
-                k_down=k_down,
-                k_temp_hot=k_temp_hot,
-                k_temp_cold=k_temp_cold,
-                opt_temp=opt_temp,
-                fatigue_rate=fatigue_rate
-            )
-            st.session_state["res_forced"] = res_forced
-            st.success(
-                f"Prédiction forcée calculée — cible: {distance_forced_km if distance_forced_km else 'GPX'} km"
-            )
-        except Exception as e:
-            st.error(f"Erreur lors du calcul forcé : {e}")
-
-# display side-by-side
-if "res_base" in st.session_state or "res_forced" in st.session_state:
-    base = st.session_state.get("res_base", None)
-    forced = st.session_state.get("res_forced", None)
-
-    left, right = st.columns(2)
-    with left:
-        st.subheader("📈 Base (d'après références)")
-        if base:
-            avg_pace_base = base["total_seconds"] / max(base["distance_gpx_km"], 1e-6)
-            st.write(f"Distance GPX détectée: {base['distance_gpx_km']:.3f} km")
-            st.write(
-                f"Temps total (base): {base['total_human']} "
-                f"({pace_seconds_to_str_per_km(avg_pace_base)} / km)"
-            )
-            st.dataframe(base["df"], use_container_width=True)
-        else:
-            st.info("Clique sur 'Calculer prédiction (BASE)' pour générer ce tableau.")
-
-    with right:
-        st.subheader("🎯 Forcé (distance/temps forcés)")
-        if forced:
-            dist_display = (
-                distance_forced_km if (force_distance_checkbox and distance_forced_km)
-                else round(forced['distance_gpx_km'], 3)
-            )
-            avg_pace_forced = forced["total_seconds"] / max(float(dist_display), 1e-6)
-            st.write(f"Distance cible: {dist_display} km")
-            st.write(
-                f"Temps total (forcé): {forced['total_human']} "
-                f"({pace_seconds_to_str_per_km(avg_pace_forced)} / km)"
-            )
-            st.dataframe(forced["df"], use_container_width=True)
-        else:
-            st.info("Clique sur 'Calculer prédiction finale (FORCÉ)' pour générer ce tableau.")
 
 # -------------------------
-# CARTE & PROFIL (GPX)
+# Affichage résultats
+# -------------------------
+if "result" in st.session_state:
+    res = st.session_state["result"]
+
+    st.subheader("📊 Résultat global")
+    avg_pace = res["total_seconds"] / max(res["distance_gpx_km"], 1e-6)
+    st.write(
+        f"Temps total : **{res['total_human']}** "
+        f"(≈ {pace_seconds_to_str_per_km(avg_pace)} / km)"
+    )
+
+    st.subheader("📋 Tableau de pacing (pente + météo)")
+    st.dataframe(res["df"], use_container_width=True)
+
+
+# -------------------------
+# Carte & profil GPX
 # -------------------------
 if gpx_file and points:
-    try:
-        df_points = gpx_to_df(points)
+    st.header("🗺️ Carte & profil GPX")
 
-        st.subheader("🗺️ Carte & Profil (GPX importé)")
+    df_points = gpx_to_df(points)
 
-        # Carte
-        view = pdk.ViewState(
-            latitude=df_points.lat.mean(),
-            longitude=df_points.lon.mean(),
-            zoom=13,
-            pitch=0
-        )
-        path_layer = pdk.Layer(
-            "PathLayer",
-            data=[{"path": df_points[["lon", "lat"]].values.tolist(), "name": "Parcours"}],
-            get_path="path",
-            get_color=[255, 0, 0],
-            width_min_pixels=4
-        )
-        deck = pdk.Deck(
-            map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-            initial_view_state=view,
-            layers=[path_layer],
-            tooltip={"text": "{name}"}
-        )
-        st.pydeck_chart(deck, use_container_width=True)
+    view = pdk.ViewState(
+        latitude=df_points.lat.mean(),
+        longitude=df_points.lon.mean(),
+        zoom=13
+    )
 
-        # Profil d'altitude
-        st.subheader("📊 Profil d'altitude")
-        plt.figure(figsize=(10, 4))
+    path_layer = pdk.Layer(
+        "PathLayer",
+        data=[{"path": df_points[["lon", "lat"]].values.tolist()}],
+        get_path="path",
+        get_color=[255, 0, 0],
+        width_min_pixels=4
+    )
 
-        total_m = 0.0
-        cumdists = [0.0]
-        for i in range(1, len(points)):
-            d = SimplePoint(
-                points[i-1].latitude,
-                points[i-1].longitude,
-                getattr(points[i-1], "elevation", 0)
-            ).distance_3d(
-                SimplePoint(
-                    points[i].latitude,
-                    points[i].longitude,
-                    getattr(points[i], "elevation", 0)
-                )
+    deck = pdk.Deck(
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        initial_view_state=view,
+        layers=[path_layer],
+    )
+
+    st.pydeck_chart(deck, use_container_width=True)
+
+    st.subheader("📈 Profil d'altitude")
+    total_m = 0.0
+    cumdists = [0.0]
+    for i in range(1, len(points)):
+        d = SimplePoint(
+            points[i-1].latitude,
+            points[i-1].longitude,
+            getattr(points[i-1], "elevation", 0)
+        ).distance_3d(
+            SimplePoint(
+                points[i].latitude,
+                points[i].longitude,
+                getattr(points[i], "elevation", 0)
             )
-            total_m += d
-            cumdists.append(total_m)
-        x_km = np.array(cumdists) / 1000.0
-        y_elev = np.array([p.elevation or 0 for p in points])
+        )
+        total_m += d
+        cumdists.append(total_m)
 
-        plt.plot(x_km, y_elev, lw=2)
-        plt.xlabel("Distance (km)")
-        plt.ylabel("Altitude (m)")
-        plt.title("Profil d'altitude du parcours")
-        plt.grid(alpha=0.3)
-        st.pyplot(plt)
-    except Exception as e:
-        st.error(f"Impossible d'afficher la carte/profil : {e}")
+    x_km = np.array(cumdists) / 1000.0
+    y_elev = np.array([p.elevation or 0 for p in points])
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(x_km, y_elev)
+    plt.xlabel("Distance (km)")
+    plt.ylabel("Altitude (m)")
+    plt.title("Profil d'altitude")
+    plt.grid(alpha=0.3)
+    st.pyplot(plt)

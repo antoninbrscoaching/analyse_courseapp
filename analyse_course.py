@@ -26,17 +26,21 @@ st.title("🏃‍♂️ Analyse & Prédiction de course — Refactorisé")
 # (clé non utilisée ici, gardée si tu veux remettre OpenWeather plus tard)
 OW_API_KEY = st.secrets.get("openweather", {}).get("api_key", "")
 
+
 @st.cache_data(show_spinner=False)
 def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name="Europe/Paris"):
     """
     Météo future : interpolation à la minute à partir d'un forecast horaire Open-Meteo.
     dt_local_naive : datetime naive supposé dans tz_name.
+
+    Ajout: wind_direction_10m (degrés, direction "FROM" = d'où vient le vent).
+    Interpolation circulaire correcte sur 0..360.
     """
     try:
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}"
-            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
+            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m,wind_direction_10m"
             f"&timezone={tz_name}"
         )
         r = requests.get(url, timeout=20)
@@ -49,6 +53,7 @@ def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name="Europe/Par
         temps = data["hourly"]["temperature_2m"]
         winds = data["hourly"]["wind_speed_10m"]
         hums  = data["hourly"]["relativehumidity_2m"]
+        wdirs = data["hourly"]["wind_direction_10m"]  # degrés "FROM"
 
         dt = dt_local_naive
 
@@ -56,23 +61,39 @@ def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name="Europe/Par
         after = None
         for i in range(len(times) - 1):
             if times[i] <= dt <= times[i + 1]:
-                before = (times[i], temps[i], winds[i], hums[i])
-                after  = (times[i + 1], temps[i + 1], winds[i + 1], hums[i + 1])
+                before = (times[i], temps[i], winds[i], hums[i], wdirs[i])
+                after  = (times[i + 1], temps[i + 1], winds[i + 1], hums[i + 1], wdirs[i + 1])
                 break
 
         if before is None:
             idx = min(range(len(times)), key=lambda i: abs(times[i] - dt))
-            return {"temp": float(temps[idx]), "wind": float(winds[idx]), "humidity": float(hums[idx])}
+            return {
+                "temp": float(temps[idx]),
+                "wind": float(winds[idx]),
+                "humidity": float(hums[idx]),
+                "wind_dir": float(wdirs[idx]),
+            }
 
-        t1, temp1, wind1, hum1 = before
-        t2, temp2, wind2, hum2 = after
+        t1, temp1, wind1, hum1, dir1 = before
+        t2, temp2, wind2, hum2, dir2 = after
         ratio = (dt - t1).total_seconds() / max(1.0, (t2 - t1).total_seconds())
 
         temp_interp = temp1 + ratio * (temp2 - temp1)
         wind_interp = wind1 + ratio * (wind2 - wind1)
         hum_interp  = hum1  + ratio * (hum2  - hum1)
 
-        return {"temp": float(temp_interp), "wind": float(wind_interp), "humidity": float(hum_interp)}
+        # interpolation circulaire (0..360) sur le plus court chemin
+        a1 = float(dir1) % 360.0
+        a2 = float(dir2) % 360.0
+        delta = (a2 - a1 + 540.0) % 360.0 - 180.0
+        dir_interp = (a1 + ratio * delta) % 360.0
+
+        return {
+            "temp": float(temp_interp),
+            "wind": float(wind_interp),
+            "humidity": float(hum_interp),
+            "wind_dir": float(dir_interp),
+        }
 
     except Exception as e:
         st.error(f"Erreur météo minute : {e}")
@@ -83,7 +104,7 @@ def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name="Europe/Par
 def get_weather_openmeteo_day(lat, lon, date_obj, tz_name="Europe/Paris"):
     """
     Archive météo (jour complet).
-    Retourne times, temps, winds, hums (times en tz_name, naive).
+    Retourne times, temps, winds, hums, wdirs (times en tz_name, naive).
     """
     try:
         date_str = date_obj.strftime("%Y-%m-%d")
@@ -91,7 +112,7 @@ def get_weather_openmeteo_day(lat, lon, date_obj, tz_name="Europe/Paris"):
             "https://archive-api.open-meteo.com/v1/archive?"
             f"latitude={lat}&longitude={lon}"
             f"&start_date={date_str}&end_date={date_str}"
-            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m"
+            "&hourly=temperature_2m,relativehumidity_2m,wind_speed_10m,wind_direction_10m"
             f"&timezone={tz_name}"
         )
         r = requests.get(url, timeout=20)
@@ -102,7 +123,8 @@ def get_weather_openmeteo_day(lat, lon, date_obj, tz_name="Europe/Paris"):
         temps = data["hourly"]["temperature_2m"]
         winds = data["hourly"]["wind_speed_10m"]
         hums  = data["hourly"]["relativehumidity_2m"]
-        return times, temps, winds, hums
+        wdirs = data["hourly"]["wind_direction_10m"]
+        return times, temps, winds, hums, wdirs
     except Exception:
         return None
 
@@ -110,6 +132,7 @@ def get_weather_openmeteo_day(lat, lon, date_obj, tz_name="Europe/Paris"):
 def get_avg_weather_for_period(lat, lon, start_dt, end_dt, tz_name="Europe/Paris"):
     """
     Météo moyenne robuste sur un intervalle.
+    (Garde la même signature/retour que ton code: temp, wind, humidity.)
     """
     if start_dt is None or end_dt is None:
         return None, None, None
@@ -121,7 +144,8 @@ def get_avg_weather_for_period(lat, lon, start_dt, end_dt, tz_name="Europe/Paris
     meteo_day = get_weather_openmeteo_day(lat, lon, start_dt.date(), tz_name=tz_name)
     if not meteo_day:
         return None, None, None
-    times, temps, winds, hums = meteo_day
+
+    times, temps, winds, hums, _wdirs = meteo_day
 
     selT = [T for t, T in zip(times, temps) if start_dt <= t <= end_dt]
     selW = [W for t, W in zip(times, winds) if start_dt <= t <= end_dt]
@@ -225,6 +249,64 @@ def haversine_m(lat1, lon1, lat2, lon2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+# -------- NEW: bearing + angle helpers (vent orienté) --------
+def bearing_deg(lat1, lon1, lat2, lon2) -> float:
+    """
+    Bearing (cap) en degrés 0..360, de (lat1,lon1) vers (lat2,lon2).
+    """
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dlambda = math.radians(lon2 - lon1)
+    y = math.sin(dlambda) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlambda)
+    brng = math.degrees(math.atan2(y, x))
+    return (brng + 360.0) % 360.0
+
+
+def smallest_angle_diff_deg(a, b) -> float:
+    """
+    Différence angulaire signée (b-a) dans [-180, +180].
+    """
+    return (b - a + 540.0) % 360.0 - 180.0
+
+
+def wind_multiplier_along_course(
+    wind_speed_ms: float,
+    wind_dir_from_deg: float,
+    course_bearing_deg_: float,
+    k_head: float = 0.025,   # pénalité par m/s de headwind "plein"
+    k_tail: float = 0.010,   # bonus par m/s de tailwind "plein"
+    cap_head: float = 0.25,  # max +25%
+    cap_tail: float = -0.08  # max -8%
+):
+    """
+    Open-Meteo wind_dir_* = direction "FROM" (d'où vient le vent).
+    On convertit en direction "TO" (où va le vent) = +180°.
+    On projette le vent sur l'axe du déplacement (course_bearing).
+
+    Retour: (mult, headwind_ms, tailwind_ms)
+    """
+    if wind_speed_ms is None or wind_dir_from_deg is None or course_bearing_deg_ is None:
+        return 1.0, 0.0, 0.0
+
+    ws = float(wind_speed_ms)
+    if ws <= 0:
+        return 1.0, 0.0, 0.0
+
+    wind_to = (float(wind_dir_from_deg) + 180.0) % 360.0
+    delta = math.radians(smallest_angle_diff_deg(course_bearing_deg_, wind_to))
+    along = ws * math.cos(delta)  # >0 tailwind, <0 headwind
+
+    tail = max(0.0, along)
+    head = max(0.0, -along)
+
+    mult = 1.0 + float(k_head) * head - float(k_tail) * tail
+    mult = min(1.0 + float(cap_head), mult)
+    mult = max(1.0 + float(cap_tail), mult)
+    return float(mult), float(head), float(tail)
+# ------------------------------------------------------------
+
+
 class SimplePoint:
     def __init__(self, lat, lon, elev=0.0, time=None):
         self.latitude = float(lat)
@@ -290,11 +372,6 @@ def temp_multiplier_nonlin(temp, opt_temp=12.0, k_hot=0.002, k_cold=0.002):
 def grade_multiplier(grade_pct, k_up=12.0, k_down=6.0, down_cap=-0.10):
     """
     Mult basé sur la PENTE (%) et non le D+ brut.
-    - grade_pct : (delta_elev / distance) * 100
-    - k_up : pénalité par 1.0 (100%) de pente (ex: 12 => +12% à +1% de pente)
-      => à +1% : mult = 1 + 12*0.01 = 1.12
-    - k_down : "bonus" en descente (plus faible et capé)
-    - down_cap : cap du bonus descente (ex: -0.10 => max -10%)
     """
     try:
         g = float(grade_pct) / 100.0
@@ -325,7 +402,6 @@ def fit_loglog_model(refs):
     if len(X) >= 2:
         coeffs = np.polyfit(X, Y, 1)
         K = float(coeffs[0])
-        # borne pour éviter dérives absurdes
         K = max(0.85, min(1.25, K))
         loga = float(coeffs[1])
         a = math.exp(loga)
@@ -357,7 +433,6 @@ def override_with_objective(distance_m, objective_time_hms, K):
 def recalibrate_ref_to_ideal(ref, k_up, k_down, k_temp_hot, k_temp_cold, opt_temp):
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
 
-    # NOTE: recalibrage historique gardé "D+/D-" (séances), ok.
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
     seg_len = safe_float(ref.get("distance", 1000.0))
@@ -619,7 +694,7 @@ def parse_tcx(file, tz_name="Europe/Paris"):
 
 
 # -------------------------
-# PRÉDICTION PRINCIPALE (pente + météo + fatigue)
+# PRÉDICTION PRINCIPALE (pente + météo + vent orienté + fatigue)
 # -------------------------
 def run_prediction_df(
     distance_cible_km,
@@ -634,10 +709,16 @@ def run_prediction_df(
     objective_time_hms=None,
     # paramètres recalibrage refs (D+/D-)
     k_up=1.040, k_down=0.996,
-    # paramètres météo
+    # paramètres météo température
     k_temp_hot=0.002, k_temp_cold=0.002, opt_temp=12.0,
     # paramètres pente (%)
     grade_k_up=12.0, grade_k_down=6.0, grade_down_cap=-0.10,
+    # vent orienté (NEW)
+    apply_wind=True,
+    k_wind_head=0.025,
+    k_wind_tail=0.010,
+    wind_cap_head=0.25,
+    wind_cap_tail=-0.08,
     # fatigue
     fatigue_rate=0.0,
     tz_name="Europe/Paris",
@@ -757,14 +838,21 @@ def run_prediction_df(
         # passage au milieu du segment
         passage_dt = dt_depart + timedelta(seconds=cum_time_temp + t_after_fatigue / 2.0)
 
-        # lat/lon
+        # lat/lon fin segment
         lat_seg = float(np.interp(d, dists_corr, df_points["lat"].values))
         lon_seg = float(np.interp(d, dists_corr, df_points["lon"].values))
+
+        # lat/lon début segment (pour bearing)
+        d_start = max(d - seg_length_m, 0.0)
+        lat_start = float(np.interp(d_start, dists_corr, df_points["lat"].values))
+        lon_start = float(np.interp(d_start, dists_corr, df_points["lon"].values))
+        course_bearing = bearing_deg(lat_start, lon_start, lat_seg, lon_seg)
 
         meteo = get_weather_openmeteo_minutely(lat_seg, lon_seg, passage_dt, tz_name=tz_name)
         temp_here = meteo["temp"] if meteo else None
         wind_here = meteo["wind"] if meteo else None
         hum_here = meteo["humidity"] if meteo else None
+        wind_dir_here = meteo.get("wind_dir") if meteo else None  # NEW
 
         # température
         if apply_temp and temp_here is not None:
@@ -774,6 +862,22 @@ def run_prediction_df(
             temp_mult = 1.0
             t_after_temp = t_after_fatigue
 
+        # vent orienté (NEW)
+        if apply_wind and wind_here is not None and wind_dir_here is not None:
+            wind_mult, head_ms, tail_ms = wind_multiplier_along_course(
+                wind_speed_ms=wind_here,
+                wind_dir_from_deg=wind_dir_here,
+                course_bearing_deg_=course_bearing,
+                k_head=k_wind_head,
+                k_tail=k_wind_tail,
+                cap_head=wind_cap_head,
+                cap_tail=wind_cap_tail
+            )
+            t_after_wind = t_after_temp * wind_mult
+        else:
+            wind_mult, head_ms, tail_ms = 1.0, 0.0, 0.0
+            t_after_wind = t_after_temp
+
         segment_infos.append({
             "idx": i,
             "d": float(d),
@@ -782,14 +886,22 @@ def run_prediction_df(
             "grade_mult": float(g_mult),
             "d_up": float(d_up),
             "d_down": float(d_down),
+
             "temp": temp_here,
             "wind": wind_here,
             "humidity": hum_here,
+
+            "wind_dir": wind_dir_here,                 # NEW
+            "course_bearing": float(course_bearing),   # NEW
+            "wind_mult": float(wind_mult),             # NEW
+            "head_ms": float(head_ms),                 # NEW
+            "tail_ms": float(tail_ms),                 # NEW
+
             "temp_mult": float(temp_mult),
-            "t_raw": float(t_after_temp),
+            "t_raw": float(t_after_wind),
         })
 
-        cum_time_temp += float(t_after_temp)
+        cum_time_temp += float(t_after_wind)
 
     # scale si objectif temps
     if objective_time_hms:
@@ -815,10 +927,17 @@ def run_prediction_df(
             "Mult Pente": round(seg["grade_mult"], 4),
             "D+ (m)": round(seg["d_up"], 1),
             "D- (m)": round(seg["d_down"], 1),
+
             "Temp (°C)": round(seg["temp"], 1) if seg["temp"] is not None else None,
             "Vent (m/s)": round(seg["wind"], 1) if seg["wind"] is not None else None,
+            "Dir vent (° FROM)": round(seg["wind_dir"], 0) if seg["wind_dir"] is not None else None,
+            "Cap seg (°)": round(seg["course_bearing"], 0) if seg.get("course_bearing") is not None else None,
+            "Headwind (m/s)": round(seg["head_ms"], 2) if seg.get("head_ms") is not None else None,
+            "Tailwind (m/s)": round(seg["tail_ms"], 2) if seg.get("tail_ms") is not None else None,
             "Humidité (%)": round(seg["humidity"], 1) if seg["humidity"] is not None else None,
+
             "Mult Temp": round(seg["temp_mult"], 4),
+            "Mult Vent": round(seg["wind_mult"], 4),
             "Temps segment (s)": round(t_seg, 1),
             "Allure (min/km)": pace_seconds_to_str_per_km(pace_per_km),
             "Temps cumulé": seconds_to_hms(cum_time),
@@ -874,7 +993,7 @@ with cols[1]:
 refs_raw = []
 
 # -------------------------
-# SAISIE RÉFÉRENCES (corrigé: plus de bloc "contrôle" placé avant remplissage)
+# SAISIE RÉFÉRENCES
 # -------------------------
 for i in range(1, st.session_state.n_refs + 1):
     st.markdown(f"#### Référence {i}")
@@ -1054,13 +1173,27 @@ with colg3:
 
 elev_smooth_window = st.slider("Lissage altitude (impact pente) - fenêtre", 1, 51, 11, 2)
 
+# -------- NEW: Vent orienté --------
+st.subheader("💨 Vent (orienté par le GPX)")
+apply_wind = st.checkbox("Prendre en compte le vent (head/tail selon orientation)", value=True)
+colw1, colw2, colw3, colw4 = st.columns(4)
+with colw1:
+    k_wind_head = st.number_input("k headwind (par m/s)", value=0.025, format="%.3f", step=0.005)
+with colw2:
+    k_wind_tail = st.number_input("k tailwind (par m/s)", value=0.010, format="%.3f", step=0.005)
+with colw3:
+    wind_cap_head = st.number_input("Cap pénalité (+)", value=0.25, format="%.2f", step=0.05)
+with colw4:
+    wind_cap_tail = st.number_input("Cap bonus (-)", value=-0.08, format="%.2f", step=0.02)
+# ----------------------------------
+
 col1, col2 = st.columns(2)
 with col1:
     date_course = st.date_input("Date de la course (Jour J)", value=date.today())
 with col2:
     heure_course = st.time_input("Heure de départ (Jour J)", value=time(9, 0))
 
-st.info("Météo: Open-Meteo forecast par segment (température, vent, humidité).")
+st.info("Météo: Open-Meteo forecast par segment (température, vent, direction du vent, humidité).")
 
 # Recalibrage refs
 st.subheader("⏱️ Références recalibrées (plat & T° opt)")
@@ -1124,11 +1257,14 @@ if st.button("▶️ Calculer prédiction (BASE, d'après références)"):
                 ideal_refs=ideal_refs,
                 apply_grade=apply_grade,
                 apply_temp=use_temp_coeff,
+                apply_wind=apply_wind,
                 apply_fatigue=fatigue_active,
                 objective_time_hms=None,
                 k_up=k_up, k_down=k_down,
                 k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold, opt_temp=opt_temp,
                 grade_k_up=grade_k_up, grade_k_down=grade_k_down, grade_down_cap=grade_down_cap,
+                k_wind_head=k_wind_head, k_wind_tail=k_wind_tail,
+                wind_cap_head=wind_cap_head, wind_cap_tail=wind_cap_tail,
                 fatigue_rate=fatigue_rate,
                 elev_smooth_window=elev_smooth_window,
             )
@@ -1177,11 +1313,14 @@ if st.button("📊 Calculer prédiction finale (FORCÉ si activé)"):
                 ideal_refs=ideal_refs,
                 apply_grade=apply_grade,
                 apply_temp=use_temp_coeff,
+                apply_wind=apply_wind,
                 apply_fatigue=fatigue_active,
                 objective_time_hms=time_forced_hms if force_time_checkbox else None,
                 k_up=k_up, k_down=k_down,
                 k_temp_hot=k_temp_hot, k_temp_cold=k_temp_cold, opt_temp=opt_temp,
                 grade_k_up=grade_k_up, grade_k_down=grade_k_down, grade_down_cap=grade_down_cap,
+                k_wind_head=k_wind_head, k_wind_tail=k_wind_tail,
+                wind_cap_head=wind_cap_head, wind_cap_tail=wind_cap_tail,
                 fatigue_rate=fatigue_rate,
                 elev_smooth_window=elev_smooth_window,
             )

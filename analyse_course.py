@@ -1,11 +1,7 @@
 # analyse_course_realiste.py
-# Streamlit app — prédiction de course (pente + météo) avec impacts météo réalistes et stables.
-#
-# Objectifs par rapport à ton code actuel :
-# - Vent moins “vélo-like” : dépend de la vitesse de course, impact faible, cap bas, lissé et/ou global.
-# - Météo moins bruitée km/km : lissage (rolling median) sur headwind / tailwind et (option) application globale.
-# - Température : courbe douce + caps (pas d’explosions).
-# - Pente : garde ton modèle non-linéaire + cap + lissage altimétrique.
+# Streamlit app — prédiction de course (pente + météo) avec impacts météo réalistes et stables,
+# + tableau récapitulatif des références recalibrées
+# + coche pour utiliser (ou non) les références recalibrées dans le fit performance.
 #
 # Dépendances : streamlit, gpxpy, fitparse, pandas, numpy, pydeck, matplotlib, requests
 
@@ -253,7 +249,7 @@ def hms_to_timedelta(hms: str) -> timedelta:
 
 
 def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
-    if seconds_per_km <= 0 or math.isnan(seconds_per_km) or math.isinf(seconds_per_km):
+    if seconds_per_km is None or seconds_per_km <= 0 or math.isnan(seconds_per_km) or math.isinf(seconds_per_km):
         return "0:00"
     m = int(seconds_per_km // 60)
     s = int(round(seconds_per_km % 60))
@@ -325,7 +321,7 @@ def temp_multiplier_realistic(
     """
     Modèle doux, plafonné.
     - pénalité ~ quadratique, asymétrique (chaleur souvent plus coûteuse)
-    - cap max à +8% (par défaut)
+    - cap max à +max_penalty
     """
     try:
         if temp_c is None:
@@ -353,7 +349,6 @@ def grade_multiplier_nonlinear_capped(
     max_down=-0.06
 ):
     """
-    Ton modèle de pente (bon) :
     - saturation progressive (tanh)
     - cap final
     """
@@ -410,28 +405,22 @@ def wind_multiplier_realistic(
     cap_tail: float = -0.04
 ) -> float:
     """
-    Vent réaliste pour la course à pied :
+    Vent réaliste (running) :
     - dépend de la vitesse de course (v_run)
-    - impact basé sur surplus de "résistance" ~ (v_rel^2 - v_run^2) / v_run^2
-    - tailwind : bénéfice partiel (tail_credit < 1)
-    - caps faibles (par défaut +10% / -4%)
-
-    drag_coeff : règle l'amplitude globale (0.008–0.015 typique).
+    - basé sur surplus relatif ~ (v_rel^2 - v_run^2)/v_run^2
+    - tailwind : gain partiel (tail_credit)
+    - caps faibles
     """
     try:
-        pace = max(120.0, float(pace_s_per_km))  # évite vitesses irréalistes, 2:00/km min
+        pace = max(120.0, float(pace_s_per_km))  # évite vitesses extrêmes
         v_run = 1000.0 / pace  # m/s
 
-        # On calcule en "équivalent headwind" : head positif, tail négatif
         w_along = float(head_ms) - float(tail_ms)  # >0 défavorable
-        # vitesse relative air
         v_rel = max(0.0, v_run + w_along)
 
-        # Surplus relatif
         base = max(1e-9, v_run ** 2)
         extra = (v_rel ** 2 - v_run ** 2) / base
 
-        # tailwind : on ne "rend" qu'une fraction du gain
         if extra < 0:
             extra = float(tail_credit) * extra
 
@@ -681,7 +670,7 @@ def override_with_objective(distance_m, objective_time_hms, K):
 
 
 # ============================================================
-# NORMALISATION RÉFÉRENCES (simple, stable)
+# NORMALISATION RÉFÉRENCES (pente+temp) + damping
 # ============================================================
 
 def elev_factor_from_dplus_dminus(
@@ -737,6 +726,11 @@ def recalibrate_ref_to_ideal(
     hot_quad: float = 0.0016,
     temp_max_penalty: float = 0.08
 ):
+    """
+    Convertit une ref (avec D+/D- et temp moyenne) vers un temps "conditions idéales":
+    - plat + température optimale
+    - avec damping (évite idéal trop optimiste)
+    """
     secs = hms_to_seconds(ref.get("temps")) if ref.get("temps") is not None else 0
     D_up = safe_float(ref.get("D_up", 0.0))
     D_down = safe_float(ref.get("D_down", 0.0))
@@ -756,7 +750,7 @@ def recalibrate_ref_to_ideal(
         max_down=max_grade_down
     )
 
-    # damping pente refs (évite "plat idéal" trop optimiste)
+    # damping pente
     factor_elev = max(0.01, float(factor_elev))
     secs_no_elev = secs / (factor_elev ** float(elev_ref_power))
 
@@ -772,7 +766,7 @@ def recalibrate_ref_to_ideal(
     else:
         secs_no_temp = secs_no_elev
 
-    # remettre à T° opt (mult = 1.0 car à l'opt, pénalité = 0)
+    # à T° opt : pas de pénalité -> mult=1.0
     return max(0.0, float(secs_no_temp))
 
 
@@ -799,15 +793,14 @@ def prepare_refs_for_fit(
         file_dur = r.get("duration_hms_file")
         raw_t = file_dur if file_dur else r.get("temps", "0:00:00")
 
-        ref_for_calib = {
-            "distance": d,
-            "temps": raw_t,
-            "D_up": r.get("D_up", 0.0),
-            "D_down": r.get("D_down", 0.0),
-            "avg_temp": r.get("avg_temp"),
-        }
-
         if ideal_refs:
+            ref_for_calib = {
+                "distance": d,
+                "temps": raw_t,
+                "D_up": r.get("D_up", 0.0),
+                "D_down": r.get("D_down", 0.0),
+                "avg_temp": r.get("avg_temp"),
+            }
             secs_recal = recalibrate_ref_to_ideal(
                 ref_for_calib,
                 opt_temp=opt_temp,
@@ -824,10 +817,10 @@ def prepare_refs_for_fit(
                 hot_quad=hot_quad,
                 temp_max_penalty=temp_max_penalty
             )
+            prepared.append({"distance": float(d), "temps": float(secs_recal)})
         else:
-            secs_recal = hms_to_seconds(raw_t)
+            prepared.append({"distance": float(d), "temps": float(hms_to_seconds(raw_t))})
 
-        prepared.append({"distance": float(d), "temps": float(secs_recal)})
     return prepared
 
 
@@ -931,7 +924,7 @@ def run_prediction_df(
     # refs -> fit
     refs_for_fit = prepare_refs_for_fit(
         refs_input=refs_input,
-        ideal_refs=use_recalibrated_refs,
+        ideal_refs=ideal_refs,
         opt_temp=opt_temp,
         grade_k_up=grade_k_up,
         grade_k_down=grade_k_down,
@@ -970,7 +963,7 @@ def run_prediction_df(
 
     dt_depart = datetime.combine(date_course_local, heure_course_local)
 
-    # 1) passe 1 : calc météo + pente + temps "sans vent" pour estimer allure locale
+    # passe 1 : calc météo + pente + temps "sans vent" pour estimer allure locale
     pre = []
     cum_time_tmp = 0.0
 
@@ -1052,14 +1045,18 @@ def run_prediction_df(
             "seg_length_m": float(seg_length_m),
             "grade_pct": float(grade_pct),
             "grade_mult": float(g_mult),
+
             "temp": temp_here,
             "humidity": hum_here,
+
             "wind": wind_here,
             "wind_dir": wind_dir_here,
             "course_bearing": float(course_bearing),
+
             "head_ms": float(head_ms),
             "tail_ms": float(tail_ms),
             "cross_ms": float(cross_ms),
+
             "temp_mult": float(temp_mult),
             "t_no_wind": float(t_after_temp),
             "pace_no_wind": float(pace_s_per_km_local),
@@ -1069,9 +1066,7 @@ def run_prediction_df(
 
     pre_df = pd.DataFrame(pre)
 
-    # 2) Vent : choisir mode
-    #    - Global : calc un multiplicateur unique basé sur head/tail "moyen orienté"
-    #    - Lissé : rolling median sur head/tail
+    # Vent : mode Global ou Lissé
     if apply_wind and not pre_df.empty:
         if wind_mode == "Global (un seul effet sur la course)":
             head_g = float(np.median(pre_df["head_ms"].values))
@@ -1088,7 +1083,6 @@ def run_prediction_df(
             )
             pre_df["wind_mult"] = float(global_wind_mult)
         else:
-            # Lissé km/km
             w = int(max(1, wind_smooth_window_km))
             if w % 2 == 0:
                 w += 1
@@ -1114,7 +1108,7 @@ def run_prediction_df(
     else:
         pre_df["wind_mult"] = 1.0
 
-    # 3) Calcule temps final (avec vent)
+    # temps final (avec vent)
     t_raw = pre_df["t_no_wind"].values * (pre_df["wind_mult"].values ** float(wind_power))
 
     # scale si objectif
@@ -1136,7 +1130,6 @@ def run_prediction_df(
 
         km_label = (seg["idx"] + 1) if seg["seg_length_m"] >= 1000 - 1e-6 else f"{int(seg['idx']+1)} ({seg['seg_length_m']:.0f}m)"
 
-        # affichage head/tail : si lissé, afficher lissé
         head_disp = seg.get("head_ms_smooth", seg["head_ms"])
         tail_disp = seg.get("tail_ms_smooth", seg["tail_ms"])
 
@@ -1198,7 +1191,7 @@ st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
 points = None
 if gpx_file:
-    gpx, points = parse_gpx_points(gpx_file)
+    _gpx, points = parse_gpx_points(gpx_file)
     if points:
         total_m_tmp = sum(
             SimplePoint(points[i - 1].latitude, points[i - 1].longitude, getattr(points[i - 1], "elevation", 0.0)).distance_3d(
@@ -1369,81 +1362,6 @@ for idx, r in enumerate(refs_raw, start=1):
 # -------------------------
 st.header("3️⃣ Paramètres modèle (réalistes)")
 
-st.subheader("⛰️ Références : normalisation (recommandée)")
-ideal_refs = st.checkbox("Normaliser les références vers conditions idéales (plat + T° opt)", value=True)
-
-colR1, colR2 = st.columns(2)
-with colR1:
-    elev_ref_power = st.slider("Atténuation pente refs (0=off, 1=full)", 0.0, 1.0, 0.60, 0.05)
-with colR2:
-    temp_ref_power = st.slider("Atténuation température refs (0=off, 1=full)", 0.0, 1.0, 0.85, 0.05)
-
-# -------------------------
-# Références recalibrées (tableau) + coche d'usage
-# -------------------------
-st.subheader("⏱️ Références recalibrées (plat & T° opt) — contrôle coach")
-
-use_recalibrated_refs = st.checkbox(
-    "Utiliser les références recalibrées pour le calcul de la course",
-    value=True
-)
-
-refs_calibrated = []
-for r in refs_raw:
-    # Temps brut (celui utilisé si coche décochée)
-    t_brut = hms_to_seconds(r["temps"])
-
-    # Temps recalibré (plat + T° opt) — utilisé si coche confirmée
-    t_ideal = recalibrate_ref_to_ideal(
-        ref=r,
-        opt_temp=opt_temp,
-
-        # pente refs (même modèle que course)
-        grade_k_up=grade_k_up,
-        grade_k_down=grade_k_down,
-        grade_down_cap=grade_down_cap,
-        g0_up_pct=g0_up_pct,
-        g0_down_pct=g0_down_pct,
-        max_grade_up=max_grade_up,
-        max_grade_down=max_grade_down,
-
-        # damping refs
-        elev_ref_power=elev_ref_power,
-        temp_ref_power=temp_ref_power,
-
-        # temp réaliste
-        cold_quad=cold_quad,
-        hot_quad=hot_quad,
-        temp_max_penalty=temp_max_penalty
-    )
-
-    # Allures indicatives
-    dist_km = max(1e-9, float(r["distance"]) / 1000.0)
-    pace_brut = (t_brut / dist_km) if (t_brut > 0 and dist_km > 0) else None
-    pace_ideal = (t_ideal / dist_km) if (t_ideal > 0 and dist_km > 0) else None
-
-    refs_calibrated.append({
-        "Distance (m)": float(r["distance"]),
-        "D+ (m)": float(r.get("D_up", 0.0)),
-        "D- (m)": float(r.get("D_down", 0.0)),
-        "Temp moy (°C)": r.get("avg_temp"),
-        "Vent moy (m/s)": r.get("avg_wind"),
-        "Hum moy (%)": r.get("avg_humidity"),
-        "Temps brut": seconds_to_hms(t_brut),
-        "Allure brute": pace_seconds_to_str_per_km(pace_brut) if pace_brut else None,
-        "Temps recalibré": seconds_to_hms(t_ideal),
-        "Allure recalibrée": pace_seconds_to_str_per_km(pace_ideal) if pace_ideal else None,
-        "Δ temps": seconds_to_hms(max(0, t_brut - t_ideal)),
-    })
-
-df_refs = pd.DataFrame(refs_calibrated)
-st.dataframe(df_refs, use_container_width=True)
-
-if use_recalibrated_refs:
-    st.success("✅ Mode actif : le modèle va fitter la performance sur les références recalibrées.")
-else:
-    st.info("ℹ️ Mode actif : le modèle va fitter la performance sur les références brutes.")
-
 st.subheader("🎢 Pente (GPX)")
 apply_grade = st.checkbox("Prendre en compte la pente", value=True)
 colg1, colg2, colg3 = st.columns(3)
@@ -1500,6 +1418,76 @@ with colw5:
 with colw6:
     wind_power = st.slider("Damping vent (puissance)", 0.2, 1.2, 1.0, 0.05)
 
+st.subheader("⛰️ Normalisation des références (damping)")
+colR1, colR2 = st.columns(2)
+with colR1:
+    elev_ref_power = st.slider("Atténuation pente refs (0=off, 1=full)", 0.0, 1.0, 0.60, 0.05)
+with colR2:
+    temp_ref_power = st.slider("Atténuation température refs (0=off, 1=full)", 0.0, 1.0, 0.85, 0.05)
+
+# -------------------------
+# Tableau récap refs recalibrées + coche d'usage
+# -------------------------
+st.subheader("⏱️ Références recalibrées (plat & T° opt) — contrôle coach")
+
+use_recalibrated_refs = st.checkbox(
+    "Utiliser les références recalibrées pour le calcul de la course",
+    value=True
+)
+
+refs_calibrated = []
+for r in refs_raw:
+    t_brut = hms_to_seconds(r["temps"])
+    t_ideal = recalibrate_ref_to_ideal(
+        ref=r,
+        opt_temp=opt_temp,
+        grade_k_up=grade_k_up,
+        grade_k_down=grade_k_down,
+        grade_down_cap=grade_down_cap,
+        g0_up_pct=g0_up_pct,
+        g0_down_pct=g0_down_pct,
+        max_grade_up=max_grade_up,
+        max_grade_down=max_grade_down,
+        elev_ref_power=elev_ref_power,
+        temp_ref_power=temp_ref_power,
+        cold_quad=cold_quad,
+        hot_quad=hot_quad,
+        temp_max_penalty=temp_max_penalty
+    )
+
+    dist_km = max(1e-9, float(r["distance"]) / 1000.0)
+    pace_brut = (t_brut / dist_km) if t_brut > 0 else None
+    pace_ideal = (t_ideal / dist_km) if t_ideal > 0 else None
+
+    refs_calibrated.append({
+        "Distance (m)": float(r["distance"]),
+        "D+ (m)": float(r.get("D_up", 0.0)),
+        "D- (m)": float(r.get("D_down", 0.0)),
+        "Temp moy (°C)": r.get("avg_temp"),
+        "Vent moy (m/s)": r.get("avg_wind"),
+        "Hum moy (%)": r.get("avg_humidity"),
+        "Temps brut": seconds_to_hms(t_brut),
+        "Allure brute": pace_seconds_to_str_per_km(pace_brut) if pace_brut else None,
+        "Temps recalibré": seconds_to_hms(t_ideal),
+        "Allure recalibrée": pace_seconds_to_str_per_km(pace_ideal) if pace_ideal else None,
+        "Δ temps": seconds_to_hms(max(0, t_brut - t_ideal)),
+    })
+
+df_refs = pd.DataFrame(refs_calibrated)
+st.dataframe(df_refs, use_container_width=True)
+
+if use_recalibrated_refs:
+    st.success("✅ Mode actif : le fit performance utilise les références recalibrées.")
+else:
+    st.info("ℹ️ Mode actif : le fit performance utilise les références brutes (sans normalisation).")
+
+# -------------------------
+# Fatigue / course
+# -------------------------
+st.header("3️⃣ bis. Fatigue (option)")
+fatigue_active = st.checkbox("Activer fatigue ?", value=False)
+fatigue_rate = st.slider("Régression finale (%)", 0.0, 30.0, 5.0, 0.5) if fatigue_active else 0.0
+
 st.subheader("📉 Affichage allure lissée")
 show_smoothed_pace = st.checkbox("Afficher allure lissée (médiane)", value=True)
 smooth_pace_window_km = st.slider("Fenêtre lissage allure (km)", 1, 9, 3, 2) if show_smoothed_pace else 3
@@ -1511,29 +1499,32 @@ with col1:
 with col2:
     heure_course = st.time_input("Heure départ", value=time(9, 0))
 
-st.info("Météo : Open-Meteo forecast (horaire) interpolé + vent orienté (head/tail) stabilisé (lissé ou global).")
-
-# Fatigue
-st.header("3️⃣ bis. Fatigue (option)")
-fatigue_active = st.checkbox("Activer fatigue ?", value=False)
-fatigue_rate = st.slider("Régression finale (%)", 0.0, 30.0, 5.0, 0.5) if fatigue_active else 0.0
+st.info("Météo : Open-Meteo forecast interpolé + vent orienté head/tail stabilisé (lissé ou global).")
 
 st.markdown("---")
-st.header("4️⃣ Calcul & Comparaison")
+st.header("4️⃣ Calcul")
 
 colf1, colf2 = st.columns(2)
 with colf1:
     force_distance_checkbox = st.checkbox("Forcer distance ?", value=False)
     if "dist_forced" not in st.session_state:
         st.session_state["dist_forced"] = 42.195
-    distance_forced_km = st.number_input("Distance forcée (km)", value=float(st.session_state["dist_forced"]),
-                                         format="%.3f", key="dist_forced") if force_distance_checkbox else None
+    distance_forced_km = st.number_input(
+        "Distance forcée (km)",
+        value=float(st.session_state["dist_forced"]),
+        format="%.3f",
+        key="dist_forced"
+    ) if force_distance_checkbox else None
+
 with colf2:
     force_time_checkbox = st.checkbox("Forcer temps objectif ?", value=False)
     if "time_forced" not in st.session_state:
         st.session_state["time_forced"] = "3:30:00"
-    time_forced_hms = st.text_input("Temps objectif (h:mm:ss)", value=str(st.session_state["time_forced"]),
-                                    key="time_forced") if force_time_checkbox else None
+    time_forced_hms = st.text_input(
+        "Temps objectif (h:mm:ss)",
+        value=str(st.session_state["time_forced"]),
+        key="time_forced"
+    ) if force_time_checkbox else None
 
 if st.button("▶️ Calculer prédiction"):
     if not gpx_file or points is None:
@@ -1547,7 +1538,9 @@ if st.button("▶️ Calculer prédiction"):
                 points=points,
                 date_course_local=date_course,
                 heure_course_local=heure_course,
-                ideal_refs=ideal_refs,
+
+                # IMPORTANT : coche coach
+                ideal_refs=use_recalibrated_refs,
 
                 apply_grade=apply_grade,
                 grade_k_up=grade_k_up,

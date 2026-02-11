@@ -931,7 +931,7 @@ def run_prediction_df(
     # refs -> fit
     refs_for_fit = prepare_refs_for_fit(
         refs_input=refs_input,
-        ideal_refs=ideal_refs,
+        ideal_refs=use_recalibrated_refs,
         opt_temp=opt_temp,
         grade_k_up=grade_k_up,
         grade_k_down=grade_k_down,
@@ -1377,6 +1377,72 @@ with colR1:
     elev_ref_power = st.slider("Atténuation pente refs (0=off, 1=full)", 0.0, 1.0, 0.60, 0.05)
 with colR2:
     temp_ref_power = st.slider("Atténuation température refs (0=off, 1=full)", 0.0, 1.0, 0.85, 0.05)
+
+# -------------------------
+# Références recalibrées (tableau) + coche d'usage
+# -------------------------
+st.subheader("⏱️ Références recalibrées (plat & T° opt) — contrôle coach")
+
+use_recalibrated_refs = st.checkbox(
+    "Utiliser les références recalibrées pour le calcul de la course",
+    value=True
+)
+
+refs_calibrated = []
+for r in refs_raw:
+    # Temps brut (celui utilisé si coche décochée)
+    t_brut = hms_to_seconds(r["temps"])
+
+    # Temps recalibré (plat + T° opt) — utilisé si coche confirmée
+    t_ideal = recalibrate_ref_to_ideal(
+        ref=r,
+        opt_temp=opt_temp,
+
+        # pente refs (même modèle que course)
+        grade_k_up=grade_k_up,
+        grade_k_down=grade_k_down,
+        grade_down_cap=grade_down_cap,
+        g0_up_pct=g0_up_pct,
+        g0_down_pct=g0_down_pct,
+        max_grade_up=max_grade_up,
+        max_grade_down=max_grade_down,
+
+        # damping refs
+        elev_ref_power=elev_ref_power,
+        temp_ref_power=temp_ref_power,
+
+        # temp réaliste
+        cold_quad=cold_quad,
+        hot_quad=hot_quad,
+        temp_max_penalty=temp_max_penalty
+    )
+
+    # Allures indicatives
+    dist_km = max(1e-9, float(r["distance"]) / 1000.0)
+    pace_brut = (t_brut / dist_km) if (t_brut > 0 and dist_km > 0) else None
+    pace_ideal = (t_ideal / dist_km) if (t_ideal > 0 and dist_km > 0) else None
+
+    refs_calibrated.append({
+        "Distance (m)": float(r["distance"]),
+        "D+ (m)": float(r.get("D_up", 0.0)),
+        "D- (m)": float(r.get("D_down", 0.0)),
+        "Temp moy (°C)": r.get("avg_temp"),
+        "Vent moy (m/s)": r.get("avg_wind"),
+        "Hum moy (%)": r.get("avg_humidity"),
+        "Temps brut": seconds_to_hms(t_brut),
+        "Allure brute": pace_seconds_to_str_per_km(pace_brut) if pace_brut else None,
+        "Temps recalibré": seconds_to_hms(t_ideal),
+        "Allure recalibrée": pace_seconds_to_str_per_km(pace_ideal) if pace_ideal else None,
+        "Δ temps": seconds_to_hms(max(0, t_brut - t_ideal)),
+    })
+
+df_refs = pd.DataFrame(refs_calibrated)
+st.dataframe(df_refs, use_container_width=True)
+
+if use_recalibrated_refs:
+    st.success("✅ Mode actif : le modèle va fitter la performance sur les références recalibrées.")
+else:
+    st.info("ℹ️ Mode actif : le modèle va fitter la performance sur les références brutes.")
 
 st.subheader("🎢 Pente (GPX)")
 apply_grade = st.checkbox("Prendre en compte la pente", value=True)

@@ -1,7 +1,10 @@
 # analyse_course_realiste.py
 # Streamlit app — prédiction de course (pente + météo) avec impacts météo réalistes et stables,
 # + tableau récapitulatif des références recalibrées
-# + coche pour utiliser (ou non) les références recalibrées dans le fit performance.
+# + coche pour utiliser (ou non) les références recalibrées dans le fit performance
+# + CORRECTION "cumul des facteurs" :
+#     1) le vent est automatiquement réduit en montée (wind gate)
+#     2) cap du multiplicateur total segment (anti “double peine”)
 #
 # Dépendances : streamlit, gpxpy, fitparse, pandas, numpy, pydeck, matplotlib, requests
 
@@ -412,7 +415,7 @@ def wind_multiplier_realistic(
     - caps faibles
     """
     try:
-        pace = max(120.0, float(pace_s_per_km))  # évite vitesses extrêmes
+        pace = max(150.0, float(pace_s_per_km))  # sécurité (évite v_run délirante)
         v_run = 1000.0 / pace  # m/s
 
         w_along = float(head_ms) - float(tail_ms)  # >0 défavorable
@@ -421,6 +424,7 @@ def wind_multiplier_realistic(
         base = max(1e-9, v_run ** 2)
         extra = (v_rel ** 2 - v_run ** 2) / base
 
+        # gain tailwind partiel
         if extra < 0:
             extra = float(tail_credit) * extra
 
@@ -430,6 +434,38 @@ def wind_multiplier_realistic(
         return float(mult)
     except Exception:
         return 1.0
+
+
+# -------------------------
+# NEW: le vent impacte moins en montée (car vitesse plus faible, + cohérence terrain)
+# -------------------------
+def wind_gate_from_grade(grade_pct: float, g1: float = 2.0, g2: float = 8.0, min_gate: float = 0.25) -> float:
+    """
+    0% -> 1.0
+    +2% -> commence à réduire
+    +8% -> réduction forte (min_gate)
+    """
+    g = max(0.0, float(grade_pct))
+    if g <= g1:
+        return 1.0
+    if g >= g2:
+        return float(min_gate)
+    x = (g - g1) / (g2 - g1)  # 0..1
+    return float(1.0 - x * (1.0 - min_gate))
+
+
+# -------------------------
+# NEW: cap du cumul des facteurs (anti double-peine)
+# -------------------------
+def cap_combined_multiplier(mult_total: float, grade_pct: float,
+                            base_cap: float = 0.08, extra_per_pct: float = 0.004, max_cap: float = 0.18) -> float:
+    """
+    Cap segment : +8% par défaut, +0.4% par % de pente positive, max +18%.
+    (Donc à +5% => cap ~ 0.08 + 0.02 = 0.10)
+    """
+    g = max(0.0, float(grade_pct))
+    cap = min(float(max_cap), float(base_cap) + float(extra_per_pct) * g)
+    return min(float(mult_total), 1.0 + cap)
 
 
 # ============================================================
@@ -866,6 +902,16 @@ def run_prediction_df(
     wind_cap_tail=-0.04,
     wind_power=1.0,
 
+    # wind gate (vent réduit en montée)
+    wind_gate_g1=2.0,
+    wind_gate_g2=8.0,
+    wind_gate_min=0.25,
+
+    # cap cumul (anti double-peine)
+    combined_base_cap=0.08,
+    combined_extra_per_pct=0.004,
+    combined_max_cap=0.18,
+
     # refs damping
     elev_ref_power=0.60,
     temp_ref_power=0.85,
@@ -1043,6 +1089,7 @@ def run_prediction_df(
             "idx": i,
             "d": float(d),
             "seg_length_m": float(seg_length_m),
+
             "grade_pct": float(grade_pct),
             "grade_mult": float(g_mult),
 
@@ -1058,6 +1105,7 @@ def run_prediction_df(
             "cross_ms": float(cross_ms),
 
             "temp_mult": float(temp_mult),
+            "t_flat": float(t_flat),
             "t_no_wind": float(t_after_temp),
             "pace_no_wind": float(pace_s_per_km_local),
         })
@@ -1081,7 +1129,7 @@ def run_prediction_df(
                 cap_head=wind_cap_head,
                 cap_tail=wind_cap_tail
             )
-            pre_df["wind_mult"] = float(global_wind_mult)
+            pre_df["wind_mult_raw"] = float(global_wind_mult)
         else:
             w = int(max(1, wind_smooth_window_km))
             if w % 2 == 0:
@@ -1102,14 +1150,53 @@ def run_prediction_df(
                         cap_tail=wind_cap_tail
                     )
                 )
-            pre_df["wind_mult"] = np.array(wind_mults, dtype=float)
+            pre_df["wind_mult_raw"] = np.array(wind_mults, dtype=float)
             pre_df["head_ms_smooth"] = head_s.values
             pre_df["tail_ms_smooth"] = tail_s.values
     else:
-        pre_df["wind_mult"] = 1.0
+        pre_df["wind_mult_raw"] = 1.0
 
-    # temps final (avec vent)
-    t_raw = pre_df["t_no_wind"].values * (pre_df["wind_mult"].values ** float(wind_power))
+    # -------------------------
+    # APPLY WIND GATE (vent réduit en montée) + APPLY COMBINED CAP
+    # -------------------------
+    wind_mult_adj = []
+    total_mult_capped = []
+    t_final_raw = []
+
+    for _, row in pre_df.iterrows():
+        wind_mult = float(row["wind_mult_raw"])
+        grade_pct = float(row["grade_pct"])
+
+        # 1) Wind gate: rapproche wind_mult de 1 en montée
+        gate = wind_gate_from_grade(grade_pct, g1=wind_gate_g1, g2=wind_gate_g2, min_gate=wind_gate_min)
+        wind_mult = 1.0 + gate * (wind_mult - 1.0)
+
+        # 2) Temps avec vent (avant cap global)
+        t_with_wind = float(row["t_no_wind"]) * (wind_mult ** float(wind_power))
+
+        # multiplicateur total relatif au plat (t_flat)
+        t_flat = max(1e-9, float(row["t_flat"]))
+        mult_total = t_with_wind / t_flat
+
+        # cap du cumul
+        mult_total = cap_combined_multiplier(
+            mult_total,
+            grade_pct=grade_pct,
+            base_cap=combined_base_cap,
+            extra_per_pct=combined_extra_per_pct,
+            max_cap=combined_max_cap
+        )
+
+        # temps final segment après cap
+        t_seg = t_flat * mult_total
+
+        wind_mult_adj.append(float(wind_mult))
+        total_mult_capped.append(float(mult_total))
+        t_final_raw.append(float(t_seg))
+
+    pre_df["wind_mult"] = np.array(wind_mult_adj, dtype=float)
+    pre_df["mult_total_capped"] = np.array(total_mult_capped, dtype=float)
+    t_raw = np.array(t_final_raw, dtype=float)
 
     # scale si objectif
     if objective_time_hms:
@@ -1147,7 +1234,9 @@ def run_prediction_df(
 
             "Headwind (m/s)": round(float(head_disp), 2),
             "Tailwind (m/s)": round(float(tail_disp), 2),
-            "Mult Vent": round(float(seg["wind_mult"]), 4),
+            "Mult Vent (gate)": round(float(seg["wind_mult"]), 4),
+
+            "Mult total (cappé)": round(float(seg["mult_total_capped"]), 4),
 
             "Humidité (%)": round(float(seg["humidity"]), 1) if seg["humidity"] is not None else None,
 
@@ -1404,7 +1493,7 @@ apply_wind = st.checkbox("Appliquer le vent", value=True)
 wind_mode = st.selectbox("Mode vent", ["Lissé (km/km)", "Global (un seul effet sur la course)"], index=0)
 colw1, colw2, colw3 = st.columns(3)
 with colw1:
-    wind_smooth_window_km = st.slider("Lissage vent (km)", 1, 11, 5, 2)
+    wind_smooth_window_km = st.slider("Lissage vent (km)", 1, 11, 7, 2)  # default un peu plus long
 with colw2:
     drag_coeff = st.number_input("drag_coeff (amplitude)", value=0.012, step=0.002, format="%.3f")
 with colw3:
@@ -1418,12 +1507,30 @@ with colw5:
 with colw6:
     wind_power = st.slider("Damping vent (puissance)", 0.2, 1.2, 1.0, 0.05)
 
+st.subheader("🧱 Anti cumul (évite les km ‘délirants’)")
+colC1, colC2, colC3 = st.columns(3)
+with colC1:
+    combined_base_cap = st.slider("Cap base (+%)", 0.02, 0.20, 0.08, 0.01)
+with colC2:
+    combined_extra_per_pct = st.slider("Extra cap par % pente (+)", 0.000, 0.020, 0.004, 0.001)
+with colC3:
+    combined_max_cap = st.slider("Cap max (+%)", 0.05, 0.35, 0.18, 0.01)
+
 st.subheader("⛰️ Normalisation des références (damping)")
 colR1, colR2 = st.columns(2)
 with colR1:
     elev_ref_power = st.slider("Atténuation pente refs (0=off, 1=full)", 0.0, 1.0, 0.60, 0.05)
 with colR2:
     temp_ref_power = st.slider("Atténuation température refs (0=off, 1=full)", 0.0, 1.0, 0.85, 0.05)
+
+st.subheader("💨 Vent réduit en montée (wind gate)")
+colG1, colG2, colG3 = st.columns(3)
+with colG1:
+    wind_gate_g1 = st.number_input("Seuil début réduction g1 (%)", value=2.0, step=0.5)
+with colG2:
+    wind_gate_g2 = st.number_input("Seuil réduction forte g2 (%)", value=8.0, step=0.5)
+with colG3:
+    wind_gate_min = st.slider("Plancher impact vent (min_gate)", 0.0, 1.0, 0.25, 0.05)
 
 # -------------------------
 # Tableau récap refs recalibrées + coche d'usage
@@ -1499,7 +1606,10 @@ with col1:
 with col2:
     heure_course = st.time_input("Heure départ", value=time(9, 0))
 
-st.info("Météo : Open-Meteo forecast interpolé + vent orienté head/tail stabilisé (lissé ou global).")
+st.info(
+    "Météo : Open-Meteo forecast interpolé + vent head/tail stabilisé. "
+    "Corrections anti-cumul : wind gate en montée + cap global segment."
+)
 
 st.markdown("---")
 st.header("4️⃣ Calcul")
@@ -1568,6 +1678,14 @@ if st.button("▶️ Calculer prédiction"):
                 wind_cap_head=wind_cap_head,
                 wind_cap_tail=wind_cap_tail,
                 wind_power=wind_power,
+
+                wind_gate_g1=wind_gate_g1,
+                wind_gate_g2=wind_gate_g2,
+                wind_gate_min=wind_gate_min,
+
+                combined_base_cap=combined_base_cap,
+                combined_extra_per_pct=combined_extra_per_pct,
+                combined_max_cap=combined_max_cap,
 
                 elev_ref_power=elev_ref_power,
                 temp_ref_power=temp_ref_power,

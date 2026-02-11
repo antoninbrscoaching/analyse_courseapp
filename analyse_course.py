@@ -250,14 +250,13 @@ def hms_to_timedelta(hms: str) -> timedelta:
     except Exception:
         return timedelta(seconds=0)
 
-
 def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
     if seconds_per_km is None or seconds_per_km <= 0 or math.isnan(seconds_per_km) or math.isinf(seconds_per_km):
         return "0:00"
-    m = int(seconds_per_km // 60)
-    s = int(round(seconds_per_km % 60))
+    total = int(round(float(seconds_per_km)))  # arrondi global => jamais 3:60
+    m = total // 60
+    s = total % 60
     return f"{m}:{s:02d}"
-
 
 def haversine_m(lat1, lon1, lat2, lon2):
     R = 6371000.0

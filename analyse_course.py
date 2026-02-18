@@ -3,9 +3,12 @@
 # + tableau récapitulatif des références recalibrées
 # + coche pour utiliser (ou non) les références recalibrées dans le fit performance
 # + CORRECTION "cumul des facteurs" :
-#     1) le vent est automatiquement réduit en montée (wind gate)
-#     2) cap du multiplicateur total segment (anti “double peine”)
-#
+#   1) le vent est automatiquement réduit en montée (wind gate)
+#   2) cap du multiplicateur total segment (anti “double peine”)
+# + NEW: PACING ULTRA (option) : régression linéaire du début vers la fin
+#   - début plus vite / fin plus lent
+#   - renormalisation => temps final EXACTEMENT inchangé (ou objectif forcé)
+
 # Dépendances : streamlit, gpxpy, fitparse, pandas, numpy, pydeck, matplotlib, requests
 
 import streamlit as st
@@ -27,7 +30,6 @@ st.set_page_config(page_title="Prédiction course route (réaliste)", layout="wi
 st.title("🏃‍♂️ Analyse & Prédiction de course — Version réaliste (météo stabilisée)")
 
 TZ_NAME_DEFAULT = "Europe/Paris"
-
 
 # ============================================================
 # MÉTÉO (Open-Meteo)
@@ -55,17 +57,15 @@ def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name=TZ_NAME_DEF
         times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
         temps = data["hourly"]["temperature_2m"]
         winds = data["hourly"]["wind_speed_10m"]
-        hums = data["hourly"]["relativehumidity_2m"]
+        hums  = data["hourly"]["relativehumidity_2m"]
         wdirs = data["hourly"]["wind_direction_10m"]
 
         dt = dt_local_naive
-
-        before = None
-        after = None
+        before, after = None, None
         for i in range(len(times) - 1):
             if times[i] <= dt <= times[i + 1]:
                 before = (times[i], temps[i], winds[i], hums[i], wdirs[i])
-                after = (times[i + 1], temps[i + 1], winds[i + 1], hums[i + 1], wdirs[i + 1])
+                after  = (times[i + 1], temps[i + 1], winds[i + 1], hums[i + 1], wdirs[i + 1])
                 break
 
         if before is None:
@@ -83,7 +83,7 @@ def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name=TZ_NAME_DEF
 
         temp_interp = temp1 + ratio * (temp2 - temp1)
         wind_interp = wind1 + ratio * (wind2 - wind1)
-        hum_interp = hum1 + ratio * (hum2 - hum1)
+        hum_interp  = hum1  + ratio * (hum2  - hum1)
 
         # interpolation circulaire (direction)
         a1 = float(dir1) % 360.0
@@ -97,7 +97,6 @@ def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name=TZ_NAME_DEF
             "humidity": float(hum_interp),
             "wind_dir": float(dir_interp),
         }
-
     except Exception as e:
         st.error(f"Erreur météo minute : {e}")
         return None
@@ -105,10 +104,7 @@ def get_weather_openmeteo_minutely(lat, lon, dt_local_naive, tz_name=TZ_NAME_DEF
 
 @st.cache_data(show_spinner=False)
 def get_weather_openmeteo_day(lat, lon, date_obj, tz_name=TZ_NAME_DEFAULT):
-    """
-    Archive météo (jour complet).
-    Retourne times, temps, winds, hums, wdirs.
-    """
+    """ Archive météo (jour complet). Retourne times, temps, winds, hums, wdirs. """
     try:
         date_str = date_obj.strftime("%Y-%m-%d")
         url = (
@@ -125,7 +121,7 @@ def get_weather_openmeteo_day(lat, lon, date_obj, tz_name=TZ_NAME_DEFAULT):
         times = [datetime.fromisoformat(t) for t in data["hourly"]["time"]]
         temps = data["hourly"]["temperature_2m"]
         winds = data["hourly"]["wind_speed_10m"]
-        hums = data["hourly"]["relativehumidity_2m"]
+        hums  = data["hourly"]["relativehumidity_2m"]
         wdirs = data["hourly"]["wind_direction_10m"]
         return times, temps, winds, hums, wdirs
     except Exception:
@@ -133,25 +129,22 @@ def get_weather_openmeteo_day(lat, lon, date_obj, tz_name=TZ_NAME_DEFAULT):
 
 
 def get_avg_weather_for_period(lat, lon, start_dt, end_dt, tz_name=TZ_NAME_DEFAULT):
-    """
-    Météo moyenne robuste sur un intervalle.
-    """
+    """ Météo moyenne robuste sur un intervalle. """
     if start_dt is None or end_dt is None:
         return None, None, None
 
     if (end_dt - start_dt).total_seconds() < 300:
         start_dt -= timedelta(minutes=2)
-        end_dt += timedelta(minutes=2)
+        end_dt   += timedelta(minutes=2)
 
     meteo_day = get_weather_openmeteo_day(lat, lon, start_dt.date(), tz_name=tz_name)
     if not meteo_day:
         return None, None, None
 
     times, temps, winds, hums, _wdirs = meteo_day
-
     selT = [T for t, T in zip(times, temps) if start_dt <= t <= end_dt]
     selW = [W for t, W in zip(times, winds) if start_dt <= t <= end_dt]
-    selH = [H for t, H in zip(times, hums) if start_dt <= t <= end_dt]
+    selH = [H for t, H in zip(times, hums)  if start_dt <= t <= end_dt]
 
     if not selT:
         idx = min(range(len(times)), key=lambda i: abs(times[i] - start_dt))
@@ -163,6 +156,7 @@ def get_avg_weather_for_period(lat, lon, start_dt, end_dt, tz_name=TZ_NAME_DEFAU
 # -------------------------
 # UTILITAIRES
 # -------------------------
+
 def safe_float(val, default=0.0):
     try:
         if val is None:
@@ -197,7 +191,6 @@ def hms_to_seconds(hms: str) -> int:
     try:
         parts = str(hms).strip().split(":")
         parts = [int(p) for p in parts]
-
         if len(parts) == 3:
             h, m, s = parts
         elif len(parts) == 2:
@@ -250,6 +243,7 @@ def hms_to_timedelta(hms: str) -> timedelta:
     except Exception:
         return timedelta(seconds=0)
 
+
 def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
     if seconds_per_km is None or seconds_per_km <= 0 or math.isnan(seconds_per_km) or math.isinf(seconds_per_km):
         return "0:00"
@@ -257,6 +251,7 @@ def pace_seconds_to_str_per_km(seconds_per_km: float) -> str:
     m = total // 60
     s = total % 60
     return f"{m}:{s:02d}"
+
 
 def haversine_m(lat1, lon1, lat2, lon2):
     R = 6371000.0
@@ -307,6 +302,53 @@ def compute_dplus_dminus(elevs):
         return dup, ddn
     except Exception:
         return 0.0, 0.0
+
+
+# -------------------------
+# NEW: PACING ULTRA (linéaire + renormalisé)
+# -------------------------
+
+def clamp(x, lo, hi):
+    return max(lo, min(hi, x))
+
+def ultra_pacing_multiplier_linear(progress_0_1: float, amp_pct: float) -> float:
+    """
+    Profil linéaire : début plus vite / fin plus lent.
+    progress: 0..1
+    amp_pct: ex 10 => début -10%, fin +10%
+    """
+    p = clamp(float(progress_0_1), 0.0, 1.0)
+    A = max(0.0, float(amp_pct)) / 100.0
+    return 1.0 + A * (2.0 * p - 1.0)  # p=0 => 1-A ; p=1 => 1+A
+
+def apply_ultra_pacing_profile(t_seg_raw: np.ndarray, d_end_m: np.ndarray, seg_len_m: np.ndarray,
+                               total_corr_m: float, amp_pct: float) -> np.ndarray:
+    """
+    Applique le pacing linéaire sur les temps segments puis renormalise pour conserver le temps total.
+    - d_end_m: distance cumulée à la fin de chaque segment
+    - seg_len_m: longueur du segment
+    """
+    if t_seg_raw is None or len(t_seg_raw) == 0:
+        return t_seg_raw
+
+    total_corr_m = max(1e-9, float(total_corr_m))
+    seg_len_m = np.asarray(seg_len_m, dtype=float)
+    d_end_m   = np.asarray(d_end_m, dtype=float)
+
+    # progress au milieu du segment (plus stable)
+    d_mid = d_end_m - 0.5 * seg_len_m
+    progress = np.clip(d_mid / total_corr_m, 0.0, 1.0)
+
+    mult = np.array([ultra_pacing_multiplier_linear(p, amp_pct) for p in progress], dtype=float)
+    t_adj = np.asarray(t_seg_raw, dtype=float) * mult
+
+    # Renormalisation stricte => total final inchangé
+    sum_raw = float(np.sum(t_seg_raw))
+    sum_adj = float(np.sum(t_adj))
+    if sum_raw > 0 and sum_adj > 0:
+        t_adj *= (sum_raw / sum_adj)
+
+    return t_adj
 
 
 # ============================================================
@@ -375,21 +417,17 @@ def grade_multiplier_nonlinear_capped(
 
 
 def wind_components_along_course(wind_speed_ms, wind_dir_from_deg, course_bearing_deg_):
-    """
-    Retourne (headwind_ms, tailwind_ms, crosswind_ms) en prenant la direction "FROM".
-    """
+    """ Retourne (headwind_ms, tailwind_ms, crosswind_ms) en prenant la direction "FROM". """
     if wind_speed_ms is None or wind_dir_from_deg is None or course_bearing_deg_ is None:
         return 0.0, 0.0, 0.0
-
     ws = float(wind_speed_ms)
     if ws <= 0:
         return 0.0, 0.0, 0.0
 
     wind_to = (float(wind_dir_from_deg) + 180.0) % 360.0
     delta = math.radians(smallest_angle_diff_deg(course_bearing_deg_, wind_to))
-
-    along = ws * math.cos(delta)   # >0 tailwind, <0 headwind
-    cross = ws * math.sin(delta)   # latéral
+    along = ws * math.cos(delta)  # >0 tailwind, <0 headwind
+    cross = ws * math.sin(delta)  # latéral
 
     tail = max(0.0, along)
     head = max(0.0, -along)
@@ -414,7 +452,7 @@ def wind_multiplier_realistic(
     - caps faibles
     """
     try:
-        pace = max(150.0, float(pace_s_per_km))  # sécurité (évite v_run délirante)
+        pace = max(150.0, float(pace_s_per_km))  # sécurité
         v_run = 1000.0 / pace  # m/s
 
         w_along = float(head_ms) - float(tail_ms)  # >0 défavorable
@@ -423,7 +461,6 @@ def wind_multiplier_realistic(
         base = max(1e-9, v_run ** 2)
         extra = (v_rel ** 2 - v_run ** 2) / base
 
-        # gain tailwind partiel
         if extra < 0:
             extra = float(tail_credit) * extra
 
@@ -435,32 +472,28 @@ def wind_multiplier_realistic(
         return 1.0
 
 
-# -------------------------
-# NEW: le vent impacte moins en montée (car vitesse plus faible, + cohérence terrain)
-# -------------------------
 def wind_gate_from_grade(grade_pct: float, g1: float = 2.0, g2: float = 8.0, min_gate: float = 0.25) -> float:
-    """
-    0% -> 1.0
-    +2% -> commence à réduire
-    +8% -> réduction forte (min_gate)
-    """
+    """ 0% -> 1.0 ; +2% -> commence à réduire ; +8% -> réduction forte (min_gate) """
     g = max(0.0, float(grade_pct))
     if g <= g1:
         return 1.0
     if g >= g2:
         return float(min_gate)
-    x = (g - g1) / (g2 - g1)  # 0..1
+    x = (g - g1) / (g2 - g1)
     return float(1.0 - x * (1.0 - min_gate))
 
 
-# -------------------------
-# NEW: cap du cumul des facteurs (anti double-peine)
-# -------------------------
-def cap_combined_multiplier(mult_total: float, grade_pct: float,
-                            base_cap: float = 0.08, extra_per_pct: float = 0.004, max_cap: float = 0.18) -> float:
+def cap_combined_multiplier(
+    mult_total: float,
+    grade_pct: float,
+    base_cap: float = 0.08,
+    extra_per_pct: float = 0.004,
+    max_cap: float = 0.18
+) -> float:
     """
-    Cap segment : +8% par défaut, +0.4% par % de pente positive, max +18%.
-    (Donc à +5% => cap ~ 0.08 + 0.02 = 0.10)
+    Cap segment :
+      +8% par défaut, +0.4% par % de pente positive, max +18%.
+      (Donc à +5% => cap ~ 0.08 + 0.02 = 0.10)
     """
     g = max(0.0, float(grade_pct))
     cap = min(float(max_cap), float(base_cap) + float(extra_per_pct) * g)
@@ -524,7 +557,6 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
 
         records = []
         times_points = []
-
         start_global = None
         elapsed_global = None
 
@@ -546,8 +578,8 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
 
             lat = lat_raw * (180 / 2**31)
             lon = lon_raw * (180 / 2**31)
-
             dt_local = ts.replace(tzinfo=None) if isinstance(ts, datetime) else None
+
             records.append((lat, lon, vals.get("altitude", 0.0), vals.get("distance", 0.0)))
             times_points.append(dt_local)
 
@@ -555,19 +587,16 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
             return None
 
         df = pd.DataFrame(records, columns=["lat", "lon", "elev", "dist"])
-        valid_times = [t for t in times_points if t is not None]
 
+        valid_times = [t for t in times_points if t is not None]
         if len(valid_times) >= 2:
             start_dt = min(valid_times)
             end_dt = max(valid_times)
         else:
-            start_dt = start_global
+            start_dt = start_global if start_global else datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
             if start_global and elapsed_global:
                 end_dt = start_global + timedelta(seconds=elapsed_global)
-            elif start_global:
-                end_dt = start_global + timedelta(minutes=5)
             else:
-                start_dt = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
                 end_dt = start_dt + timedelta(minutes=5)
 
         avgT, avgW, avgH = get_avg_weather_for_period(records[0][0], records[0][1], start_dt, end_dt, tz_name=tz_name)
@@ -577,8 +606,7 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
         ddn = float(-np.sum(np.clip(np.diff(elev_arr), a_min=None, a_max=0))) if elev_arr.size >= 2 else 0.0
 
         return {
-            "points": [{"lat": r[0], "lon": r[1], "elev": r[2], "dist": r[3], "time": t}
-                       for (r, t) in zip(records, times_points)],
+            "points": [{"lat": r[0], "lon": r[1], "elev": r[2], "dist": r[3], "time": t} for (r, t) in zip(records, times_points)],
             "distance": float(df["dist"].max()) if not df.empty else 0.0,
             "D_up": dup,
             "D_down": ddn,
@@ -609,13 +637,13 @@ def parse_tcx(file, tz_name=TZ_NAME_DEFAULT):
         lon = tp.find("tcx:Position/tcx:LongitudeDegrees", ns)
         tim = tp.find("tcx:Time", ns)
         ele = tp.find("tcx:AltitudeMeters", ns)
+
         if lat is None or lon is None:
             continue
 
         lat = float(lat.text)
         lon = float(lon.text)
         elev = float(ele.text) if ele is not None else 0.0
-
         try:
             t = datetime.fromisoformat(tim.text.replace("Z", "+00:00")).replace(tzinfo=None)
         except Exception:
@@ -785,23 +813,22 @@ def recalibrate_ref_to_ideal(
         max_down=max_grade_down
     )
 
-    # damping pente
     factor_elev = max(0.01, float(factor_elev))
     secs_no_elev = secs / (factor_elev ** float(elev_ref_power))
 
-    # temp refs
     temp_real = ref.get("avg_temp")
     if temp_real is not None:
         mult_real = temp_multiplier_realistic(
-            temp_real, opt_temp=opt_temp,
-            cold_quad=cold_quad, hot_quad=hot_quad,
+            temp_real,
+            opt_temp=opt_temp,
+            cold_quad=cold_quad,
+            hot_quad=hot_quad,
             max_penalty=temp_max_penalty
         )
         secs_no_temp = secs_no_elev / (max(0.01, float(mult_real)) ** float(temp_ref_power))
     else:
         secs_no_temp = secs_no_elev
 
-    # à T° opt : pas de pénalité -> mult=1.0
     return max(0.0, float(secs_no_temp))
 
 
@@ -919,10 +946,15 @@ def run_prediction_df(
     apply_fatigue=False,
     fatigue_rate=0.0,
 
+    # NEW: pacing ultra
+    apply_ultra_pacing=False,
+    ultra_pacing_amp_pct=10.0,
+
     # objectif
     objective_time_hms=None,
 
     tz_name=TZ_NAME_DEFAULT,
+
     show_smoothed_pace=True,
     smooth_pace_window_km=3
 ):
@@ -934,7 +966,9 @@ def run_prediction_df(
     cum = [0.0]
     for i in range(1, len(points)):
         d = SimplePoint(
-            points[i - 1].latitude, points[i - 1].longitude, getattr(points[i - 1], "elevation", 0.0)
+            points[i - 1].latitude,
+            points[i - 1].longitude,
+            getattr(points[i - 1], "elevation", 0.0)
         ).distance_3d(
             SimplePoint(points[i].latitude, points[i].longitude, getattr(points[i], "elevation", 0.0))
         )
@@ -1020,6 +1054,7 @@ def run_prediction_df(
         e_cur = float(np.interp(d, dists_corr, elev_smooth))
         e_prev_d = max(d - seg_length_m, 0.0)
         e_prev = float(np.interp(e_prev_d, dists_corr, elev_smooth)) if i > 0 else e_cur
+
         delta_e = e_cur - e_prev
         grade_pct = (delta_e / max(1e-6, seg_length_m)) * 100.0
 
@@ -1043,7 +1078,7 @@ def run_prediction_df(
             g_mult = 1.0
             t_after_grade = t_flat
 
-        # fatigue
+        # fatigue (si activée)
         if apply_fatigue and fatigue_rate > 0 and total_corr > 0:
             progression = d / total_corr
             t_after_fatigue = t_after_grade * (1.0 + (fatigue_rate / 100.0) * progression)
@@ -1055,7 +1090,6 @@ def run_prediction_df(
 
         lat_seg = float(np.interp(d, dists_corr, df_points["lat"].values))
         lon_seg = float(np.interp(d, dists_corr, df_points["lon"].values))
-
         d_start = max(d - seg_length_m, 0.0)
         lat_start = float(np.interp(d_start, dists_corr, df_points["lat"].values))
         lon_start = float(np.interp(d_start, dists_corr, df_points["lon"].values))
@@ -1064,22 +1098,19 @@ def run_prediction_df(
         meteo = get_weather_openmeteo_minutely(lat_seg, lon_seg, passage_dt, tz_name=tz_name)
         temp_here = meteo["temp"] if meteo else None
         wind_here = meteo["wind"] if meteo else None
-        hum_here = meteo["humidity"] if meteo else None
+        hum_here  = meteo["humidity"] if meteo else None
         wind_dir_here = meteo.get("wind_dir") if meteo else None
 
         # temp
         if apply_temp and temp_here is not None:
             temp_mult = temp_multiplier_realistic(
-                temp_here, opt_temp=opt_temp,
-                cold_quad=cold_quad, hot_quad=hot_quad,
-                max_penalty=temp_max_penalty
+                temp_here, opt_temp=opt_temp, cold_quad=cold_quad, hot_quad=hot_quad, max_penalty=temp_max_penalty
             )
             t_after_temp = t_after_fatigue * (float(temp_mult) ** float(temp_power))
         else:
             temp_mult = 1.0
             t_after_temp = t_after_fatigue
 
-        # allure locale estimée (avant vent)
         pace_s_per_km_local = (t_after_temp / seg_length_m) * 1000.0 if seg_length_m > 0 else t_after_temp
 
         head_ms, tail_ms, cross_ms = wind_components_along_course(wind_here, wind_dir_here, course_bearing)
@@ -1088,21 +1119,16 @@ def run_prediction_df(
             "idx": i,
             "d": float(d),
             "seg_length_m": float(seg_length_m),
-
             "grade_pct": float(grade_pct),
             "grade_mult": float(g_mult),
-
             "temp": temp_here,
             "humidity": hum_here,
-
             "wind": wind_here,
             "wind_dir": wind_dir_here,
             "course_bearing": float(course_bearing),
-
             "head_ms": float(head_ms),
             "tail_ms": float(tail_ms),
             "cross_ms": float(cross_ms),
-
             "temp_mult": float(temp_mult),
             "t_flat": float(t_flat),
             "t_no_wind": float(t_after_temp),
@@ -1153,11 +1179,10 @@ def run_prediction_df(
             pre_df["head_ms_smooth"] = head_s.values
             pre_df["tail_ms_smooth"] = tail_s.values
     else:
-        pre_df["wind_mult_raw"] = 1.0
+        if not pre_df.empty:
+            pre_df["wind_mult_raw"] = 1.0
 
-    # -------------------------
-    # APPLY WIND GATE (vent réduit en montée) + APPLY COMBINED CAP
-    # -------------------------
+    # APPLY WIND GATE + APPLY COMBINED CAP
     wind_mult_adj = []
     total_mult_capped = []
     t_final_raw = []
@@ -1166,18 +1191,18 @@ def run_prediction_df(
         wind_mult = float(row["wind_mult_raw"])
         grade_pct = float(row["grade_pct"])
 
-        # 1) Wind gate: rapproche wind_mult de 1 en montée
+        # 1) Wind gate (réduit l'effet du vent en montée)
         gate = wind_gate_from_grade(grade_pct, g1=wind_gate_g1, g2=wind_gate_g2, min_gate=wind_gate_min)
         wind_mult = 1.0 + gate * (wind_mult - 1.0)
 
-        # 2) Temps avec vent (avant cap global)
+        # 2) Temps avec vent
         t_with_wind = float(row["t_no_wind"]) * (wind_mult ** float(wind_power))
 
-        # multiplicateur total relatif au plat (t_flat)
+        # multiplicateur total relatif au plat
         t_flat = max(1e-9, float(row["t_flat"]))
         mult_total = t_with_wind / t_flat
 
-        # cap du cumul
+        # cap du cumul (anti double peine)
         mult_total = cap_combined_multiplier(
             mult_total,
             grade_pct=grade_pct,
@@ -1195,7 +1220,22 @@ def run_prediction_df(
 
     pre_df["wind_mult"] = np.array(wind_mult_adj, dtype=float)
     pre_df["mult_total_capped"] = np.array(total_mult_capped, dtype=float)
+
     t_raw = np.array(t_final_raw, dtype=float)
+
+    # -------------------------
+    # NEW: PACING ULTRA (linéaire + renormalisé => temps total inchangé)
+    # -------------------------
+    if apply_ultra_pacing and not pre_df.empty and float(ultra_pacing_amp_pct) > 0:
+        d_end_m = pre_df["d"].astype(float).values
+        seg_len_m = pre_df["seg_length_m"].astype(float).values
+        t_raw = apply_ultra_pacing_profile(
+            t_seg_raw=t_raw,
+            d_end_m=d_end_m,
+            seg_len_m=seg_len_m,
+            total_corr_m=total_corr,
+            amp_pct=ultra_pacing_amp_pct
+        )
 
     # scale si objectif
     if objective_time_hms:
@@ -1208,14 +1248,15 @@ def run_prediction_df(
     # table finale
     results = []
     cum_time = 0.0
+
     for i in range(len(pre_df)):
         seg = pre_df.iloc[i]
         t_seg = float(t_raw[i]) * float(scale)
         cum_time += t_seg
+
         pace_per_km = (t_seg / float(seg["seg_length_m"])) * 1000.0 if seg["seg_length_m"] > 0 else t_seg
 
         km_label = (seg["idx"] + 1) if seg["seg_length_m"] >= 1000 - 1e-6 else f"{int(seg['idx']+1)} ({seg['seg_length_m']:.0f}m)"
-
         head_disp = seg.get("head_ms_smooth", seg["head_ms"])
         tail_disp = seg.get("tail_ms_smooth", seg["tail_ms"])
 
@@ -1223,22 +1264,16 @@ def run_prediction_df(
             "Km": km_label,
             "Pente (%)": round(float(seg["grade_pct"]), 2),
             "Mult Pente": round(float(seg["grade_mult"]), 4),
-
             "Temp (°C)": round(float(seg["temp"]), 1) if seg["temp"] is not None else None,
             "Mult Temp": round(float(seg["temp_mult"]), 4),
-
             "Vent (m/s)": round(float(seg["wind"]), 1) if seg["wind"] is not None else None,
             "Dir vent (° FROM)": round(float(seg["wind_dir"]), 0) if seg["wind_dir"] is not None else None,
             "Cap seg (°)": round(float(seg["course_bearing"]), 0),
-
             "Headwind (m/s)": round(float(head_disp), 2),
             "Tailwind (m/s)": round(float(tail_disp), 2),
             "Mult Vent (gate)": round(float(seg["wind_mult"]), 4),
-
             "Mult total (cappé)": round(float(seg["mult_total_capped"]), 4),
-
             "Humidité (%)": round(float(seg["humidity"]), 1) if seg["humidity"] is not None else None,
-
             "Temps segment (s)": round(t_seg, 1),
             "Allure (min/km)": pace_seconds_to_str_per_km(pace_per_km),
             "Temps cumulé": seconds_to_hms(cum_time),
@@ -1254,7 +1289,9 @@ def run_prediction_df(
             if w % 2 == 0:
                 w += 1
             s = pd.Series(pace_s).rolling(window=w, center=True, min_periods=1).median()
-            df["Allure lissée (min/km)"] = s.apply(pace_seconds_to_str_per_km)
+            df["Allure lissée (min/km)"] = s.apply(lambda x: pace_seconds_to_str_per_km((x / 1000.0) * 1000.0) if x > 0 else "0:00")
+            # NB: ici on lisse les "temps segment", donc allure lissée = temps/km (segments = ~1km)
+            df["Allure lissée (min/km)"] = s.apply(lambda x: pace_seconds_to_str_per_km(x))
         except Exception:
             pass
 
@@ -1278,6 +1315,7 @@ def run_prediction_df(
 st.header("1️⃣ Parcours GPX")
 gpx_file = st.file_uploader("📂 Importer un fichier GPX", type=["gpx"])
 points = None
+
 if gpx_file:
     _gpx, points = parse_gpx_points(gpx_file)
     if points:
@@ -1325,21 +1363,19 @@ for i in range(1, st.session_state.n_refs + 1):
         dup = st.number_input(f"D+ {i}", value=float(default_dup), key=f"dup_{i}")
     with c5:
         ddn = st.number_input(f"D- {i}", value=float(default_ddn), key=f"ddn_{i}")
-
     with c6:
         file_in = st.file_uploader(f"FIT/TCX {i}", type=["fit", "tcx"], key=f"fileref_{i}") if use_file else None
 
     col_s, col_e = st.columns(2)
     start_hms = col_s.text_input(f"Début réf {i} (hh:mm:ss)", value="00:00:00", key=f"start_{i}")
-    end_hms = col_e.text_input(f"Fin réf {i} (hh:mm:ss)", value="23:59:59", key=f"end_{i}")
-
+    end_hms   = col_e.text_input(f"Fin réf {i} (hh:mm:ss)", value="23:59:59", key=f"end_{i}")
     start_td = hms_to_timedelta(start_hms)
-    end_td = hms_to_timedelta(end_hms)
+    end_td   = hms_to_timedelta(end_hms)
 
     duration_hms_file = None
     avg_temp_ref = None
     avg_wind_ref = None
-    avg_hum_ref = None
+    avg_hum_ref  = None
     fit_data = None
     tcx_data = None
 
@@ -1350,23 +1386,22 @@ for i in range(1, st.session_state.n_refs + 1):
             fit_data = parse_fit(file_in)
             if fit_data:
                 dist = fit_data["distance"]
-                dup = fit_data["D_up"]
-                ddn = fit_data["D_down"]
+                dup  = fit_data["D_up"]
+                ddn  = fit_data["D_down"]
                 duration_hms_file = fit_data["duration_hms"]
                 avg_temp_ref = fit_data["avg_temp"]
                 avg_wind_ref = fit_data["avg_wind"]
-                avg_hum_ref = fit_data["avg_humidity"]
-
+                avg_hum_ref  = fit_data["avg_humidity"]
         elif filename.endswith(".tcx"):
             tcx_data = parse_tcx(file_in)
             if tcx_data:
                 dist = tcx_data["distance"]
-                dup = tcx_data["D_up"]
-                ddn = tcx_data["D_down"]
+                dup  = tcx_data["D_up"]
+                ddn  = tcx_data["D_down"]
                 duration_hms_file = tcx_data["duration_hms"]
                 avg_temp_ref = tcx_data["avg_temp"]
                 avg_wind_ref = tcx_data["avg_wind"]
-                avg_hum_ref = tcx_data["avg_humidity"]
+                avg_hum_ref  = tcx_data["avg_humidity"]
 
         # découpe segment
         if (start_td.total_seconds() > 0 or end_td.total_seconds() < 86399):
@@ -1378,18 +1413,15 @@ for i in range(1, st.session_state.n_refs + 1):
 
             if pts:
                 seg = extract_segment_from_points(pts, start_td, end_td)
-
                 dist_seg = 0.0
                 elevs_seg = []
                 times_seg = []
-
                 for j in range(1, len(seg)):
                     p1, p2 = seg[j - 1], seg[j]
                     if isinstance(p1, dict):
                         lat1, lon1, elev1, t1 = p1["lat"], p1["lon"], p1["elev"], p1.get("time")
                     else:
                         lat1, lon1, elev1, t1 = p1.latitude, p1.longitude, p1.elevation, p1.time
-
                     if isinstance(p2, dict):
                         lat2, lon2, elev2, t2 = p2["lat"], p2["lon"], p2["elev"], p2.get("time")
                     else:
@@ -1401,10 +1433,8 @@ for i in range(1, st.session_state.n_refs + 1):
                         times_seg.append(t2)
 
                 dup, ddn = compute_dplus_dminus(elevs_seg)
-
                 if len(times_seg) >= 2:
                     duration_hms_file = seconds_to_hms((times_seg[-1] - times_seg[0]).total_seconds())
-
                 dist = round(dist_seg)
 
     temps_effectif = duration_hms_file if duration_hms_file else temps
@@ -1484,6 +1514,7 @@ with colt2:
     cold_quad = st.number_input("Froid (quad)", value=0.0012, step=0.0002, format="%.4f")
 with colt3:
     hot_quad = st.number_input("Chaud (quad)", value=0.0016, step=0.0002, format="%.4f")
+
 temp_max_penalty = st.slider("Cap pénalité temp", 0.00, 0.15, 0.08, 0.01)
 temp_power = st.slider("Damping temp (puissance)", 0.2, 1.2, 1.0, 0.05)
 
@@ -1492,7 +1523,7 @@ apply_wind = st.checkbox("Appliquer le vent", value=True)
 wind_mode = st.selectbox("Mode vent", ["Lissé (km/km)", "Global (un seul effet sur la course)"], index=0)
 colw1, colw2, colw3 = st.columns(3)
 with colw1:
-    wind_smooth_window_km = st.slider("Lissage vent (km)", 1, 11, 7, 2)  # default un peu plus long
+    wind_smooth_window_km = st.slider("Lissage vent (km)", 1, 11, 7, 2)
 with colw2:
     drag_coeff = st.number_input("drag_coeff (amplitude)", value=0.012, step=0.002, format="%.3f")
 with colw3:
@@ -1531,15 +1562,12 @@ with colG2:
 with colG3:
     wind_gate_min = st.slider("Plancher impact vent (min_gate)", 0.0, 1.0, 0.25, 0.05)
 
+
 # -------------------------
 # Tableau récap refs recalibrées + coche d'usage
 # -------------------------
 st.subheader("⏱️ Références recalibrées (plat & T° opt) — contrôle coach")
-
-use_recalibrated_refs = st.checkbox(
-    "Utiliser les références recalibrées pour le calcul de la course",
-    value=True
-)
+use_recalibrated_refs = st.checkbox("Utiliser les références recalibrées pour le calcul de la course", value=True)
 
 refs_calibrated = []
 for r in refs_raw:
@@ -1587,12 +1615,26 @@ if use_recalibrated_refs:
 else:
     st.info("ℹ️ Mode actif : le fit performance utilise les références brutes (sans normalisation).")
 
+
 # -------------------------
-# Fatigue / course
+# Fatigue / pacing ultra / course
 # -------------------------
 st.header("3️⃣ bis. Fatigue (option)")
 fatigue_active = st.checkbox("Activer fatigue ?", value=False)
 fatigue_rate = st.slider("Régression finale (%)", 0.0, 30.0, 5.0, 0.5) if fatigue_active else 0.0
+
+st.header("3️⃣ ter. Pacing Ultra (option)")
+ultra_pacing_active = st.checkbox(
+    "Activer pacing Ultra (départ plus vite → fin plus lente, linéaire, total inchangé)",
+    value=False
+)
+ultra_pacing_amp_pct = st.slider(
+    "Amplitude pacing (%) : début -A% / fin +A%",
+    0.0, 40.0, 10.0, 0.5
+) if ultra_pacing_active else 0.0
+
+if ultra_pacing_active and fatigue_active:
+    st.warning("⚠️ Fatigue + Pacing Ultra = double effet. Si tu veux une stratégie pure Ultra, désactive fatigue.")
 
 st.subheader("📉 Affichage allure lissée")
 show_smoothed_pace = st.checkbox("Afficher allure lissée (médiane)", value=True)
@@ -1607,13 +1649,16 @@ with col2:
 
 st.info(
     "Météo : Open-Meteo forecast interpolé + vent head/tail stabilisé. "
-    "Corrections anti-cumul : wind gate en montée + cap global segment."
+    "Corrections anti-cumul : wind gate en montée + cap global segment. "
+    "Option Ultra : pacing linéaire renormalisé (temps final inchangé)."
 )
 
 st.markdown("---")
-st.header("4️⃣ Calcul")
 
+
+st.header("4️⃣ Calcul")
 colf1, colf2 = st.columns(2)
+
 with colf1:
     force_distance_checkbox = st.checkbox("Forcer distance ?", value=False)
     if "dist_forced" not in st.session_state:
@@ -1635,12 +1680,14 @@ with colf2:
         key="time_forced"
     ) if force_time_checkbox else None
 
+
 if st.button("▶️ Calculer prédiction"):
     if not gpx_file or points is None:
         st.error("Importe un fichier GPX d'abord.")
     else:
         try:
             dist_target = distance_forced_km if (force_distance_checkbox and distance_forced_km) else None
+
             res = run_prediction_df(
                 distance_cible_km=dist_target,
                 refs_input=refs_raw,
@@ -1692,23 +1739,33 @@ if st.button("▶️ Calculer prédiction"):
                 apply_fatigue=fatigue_active,
                 fatigue_rate=fatigue_rate,
 
+                # NEW: ultra pacing
+                apply_ultra_pacing=ultra_pacing_active,
+                ultra_pacing_amp_pct=ultra_pacing_amp_pct,
+
                 objective_time_hms=time_forced_hms if force_time_checkbox else None,
 
                 show_smoothed_pace=show_smoothed_pace,
                 smooth_pace_window_km=smooth_pace_window_km
             )
+
             st.session_state["res"] = res
             st.success("Prédiction calculée ✅")
+
         except Exception as e:
             st.error(f"Erreur : {e}")
 
+
 if "res" in st.session_state:
     res = st.session_state["res"]
+
     st.subheader("📈 Résultat")
     avg_pace = res["total_seconds"] / max(res["distance_gpx_km"], 1e-6)
     st.write(f"Distance GPX détectée : {res['distance_gpx_km']:.3f} km")
     st.write(f"Temps total : {res['total_human']} ({pace_seconds_to_str_per_km(avg_pace)}/km)")
+
     st.dataframe(res["df"], use_container_width=True)
+
 
 # -------------------------
 # CARTE & PROFIL
@@ -1718,7 +1775,6 @@ if gpx_file and points:
         df_points = gpx_to_df(points)
 
         st.subheader("🗺️ Carte & Profil (GPX)")
-
         view = pdk.ViewState(
             latitude=float(df_points.lat.mean()),
             longitude=float(df_points.lon.mean()),
@@ -1742,7 +1798,6 @@ if gpx_file and points:
 
         st.subheader("📊 Profil d'altitude")
         plt.figure(figsize=(10, 4))
-
         total_m = 0.0
         cumdists = [0.0]
         for i in range(1, len(points)):
@@ -1772,5 +1827,6 @@ if gpx_file and points:
         plt.title("Profil d'altitude du parcours")
         plt.grid(alpha=0.3)
         st.pyplot(plt)
+
     except Exception as e:
         st.error(f"Impossible d'afficher la carte/profil : {e}")

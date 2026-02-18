@@ -548,7 +548,6 @@ def extract_segment_from_points(points, start_td, end_td):
     seg = [p for p in points if (get_time(p) is not None and start_dt <= get_time(p) <= end_dt)]
     return seg if len(seg) >= 2 else points
 
-
 def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
     try:
         file.seek(0)
@@ -560,6 +559,7 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
         start_global = None
         elapsed_global = None
 
+        # Session (pour fallback start/end)
         for msg in fit.get_messages("session"):
             vals = {d.name: d.value for d in msg}
             if isinstance(vals.get("start_time"), datetime):
@@ -567,8 +567,10 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
             if isinstance(vals.get("total_elapsed_time"), (int, float)):
                 elapsed_global = float(vals["total_elapsed_time"])
 
+        # Records
         for msg in fit.get_messages("record"):
             vals = {d.name: d.value for d in msg}
+
             lat_raw = vals.get("position_lat")
             lon_raw = vals.get("position_long")
             ts = vals.get("timestamp")
@@ -580,7 +582,23 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
             lon = lon_raw * (180 / 2**31)
             dt_local = ts.replace(tzinfo=None) if isinstance(ts, datetime) else None
 
-            records.append((lat, lon, vals.get("altitude", 0.0), vals.get("distance", 0.0)))
+            # ✅ ALTITUDE ROBUSTE : enhanced_altitude (très fréquent) > altitude > baro_altitude > gps_altitude
+            alt = vals.get("enhanced_altitude", None)
+            if alt is None:
+                alt = vals.get("altitude", None)
+            if alt is None:
+                alt = vals.get("baro_altitude", None)
+            if alt is None:
+                alt = vals.get("gps_altitude", None)
+            if alt is None:
+                alt = 0.0
+
+            # distance (m) si dispo
+            dist_val = vals.get("distance", None)
+            if dist_val is None:
+                dist_val = 0.0
+
+            records.append((lat, lon, float(alt), float(dist_val)))
             times_points.append(dt_local)
 
         if not records:
@@ -593,10 +611,15 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
             start_dt = min(valid_times)
             end_dt = max(valid_times)
         else:
-            start_dt = start_global if start_global else datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            # fallback session
             if start_global and elapsed_global:
+                start_dt = start_global
                 end_dt = start_global + timedelta(seconds=elapsed_global)
+            elif start_global:
+                start_dt = start_global
+                end_dt = start_global + timedelta(minutes=5)
             else:
+                start_dt = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
                 end_dt = start_dt + timedelta(minutes=5)
 
         avgT, avgW, avgH = get_avg_weather_for_period(records[0][0], records[0][1], start_dt, end_dt, tz_name=tz_name)
@@ -615,10 +638,10 @@ def parse_fit(file, tz_name=TZ_NAME_DEFAULT):
             "avg_wind": avgW,
             "avg_humidity": avgH
         }
+
     except Exception as e:
         st.error(f"Erreur FIT : {e}")
         return None
-
 
 def parse_tcx(file, tz_name=TZ_NAME_DEFAULT):
     try:
